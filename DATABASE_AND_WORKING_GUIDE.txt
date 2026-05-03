@@ -1,0 +1,90 @@
+# YOJNASETU BOT: DATABASE & ARCHITECTURE GUIDE
+
+This document details the MongoDB schema, data flow, and the "Trust Architecture" (Option B) used by the YojnaSetu welfare scheme bot.
+
+---
+
+## 1. DATABASE ARCHITECTURE
+- **Engine**: MongoDB Atlas (Cloud Instance)
+- **Database Name**: `welfare_chatbot`
+- **Driver**: `pymongo` (v4.6.3)
+
+### COLLECTIONS & SCHEMAS
+
+#### A. `users` (User Profile & State)
+Stores the persistent profile and conversation status for every citizen.
+- **`phone_number`**: (String, Unique Index) Primary identifier.
+- **`profile`**: (Object) 
+    - `age`: (Integer) Normalized age.
+    - `income`: (Integer) Annual income in INR (Parsed from "2lakh", "50k", etc.).
+    - `gender`: (String) `male`, `female`, or `other`.
+    - `occupation`: (String) User's job title.
+    - `state`: (String) Lowercase Indian state name.
+    - `bpl_card`: (Boolean/null) Poverty status indicator.
+- **`conv_state`**: (String) Current position in the funnel (`awaiting_language`, `collecting_profile`, `showing_schemes`).
+- **`category`**: (String) Active domain interest (e.g., `Education`, `Health`).
+- **`last_active`**: (Date) Timestamp of last interaction.
+
+#### B. `schemes_structured` (Scheme Knowledge Base)
+Pre-processed welfare data used for deterministic filtering and RAG.
+- **`scheme_name`**: (String) Full name of the scheme.
+- **`category`**: (String) Domestic domain mapping.
+- **`eligibility`**: (Object) 
+    - `min_age` / `max_age`: (Integer) Inclusive bounds.
+    - `max_income`: (Integer) Upper threshold for financial eligibility.
+    - `gender`: (String) `male`, `female`, or `all`.
+    - `bpl_required`: (Boolean) Strict poverty status gate.
+- **`state`**: (String) Specific state or "all india".
+- **`embedding`**: (Array[Float]) Vector representation for semantic search.
+
+#### C. `messages` (Audit Logs)
+- **`session_id`**: (String, Index) Link to the chat session.
+- **`sender`**: (String) `user` or `bot`.
+- **`text`**: (String) Message content.
+- **`timestamp`**: (Date) UTC time of event.
+
+#### D. `llm_cache` (Performance Layer)
+- **`_id`**: (String) SHA-256 hash of the prompt.
+- **`response`**: (Object/String) The cached AI output.
+- **`model_name`**: (String) The specific model that provided the response (e.g., `ollama:mistral`).
+- **`latency_ms`**: (Integer) Time taken for the LLM to generate the response.
+- **`expires_at`**: (Date) TTL index for automatic cleanup.
+
+#### E. `eligibility_checks` (Explainability Logs)
+Records exactly WHY a user matched or failed a specific scheme.
+- **`scheme_id`**: Link to scheme.
+- **`is_eligible`**: (Boolean) Outcome.
+- **`reasoning`**: (List[String]) Explicit audit trail (e.g., "Income 3L exceeds 2L limit").
+
+---
+
+## 2. THE WORKING PIPELINE: "OPTION B" (TRUST ARCHITECTURE)
+
+The bot follows a deterministic, "Safety-First" processing flow to eliminate AI hallucinations.
+
+### STEP 1: INGRESS & NORMALIZATION
+1. **Input**: Voice (Sarvam/Whisper) or Text.
+2. **Detection**: LLM identifies language and extracts entities (age, income, etc.).
+3. **Validator**: Strict Python rules normalize values. 
+   - *Example*: User says "I am a doctor" → Validator maps context to "Health".
+
+### STEP 2: HYBRID RAG RETRIEVAL
+- **Pre-filtering**: MongoDB finds schemes matching the user's **Category** and **State** first. This cuts noise from 1000s of schemes to ~50.
+- **Vector Search**: Ranks the pre-filtered subset by semantic relevance to the user's specific problem.
+
+### STEP 3: DETERMINISTIC TWO-STAGE FILTER
+Unlike basic bots, we do NOT ask the LLM "is this user eligible?".
+1. **Hard Filter**: Python checks: `if income > max_limit: REJECT`.
+2. **Soft Scoring**: Ranks remaining valid matches using a hybrid formula:
+   `Final Score = (0.6 * RAG_Vector_Score) + (0.4 * Keyword_Match_Score)`
+
+### STEP 4: SMART RESPONSE ROUTING
+- **IF ELIGIBLE FOUND**: LLM acts strictly as a **"Formatter"**. It explains the provided schemes using user's language but is PROHIBITED from adding new ones.
+- **IF NO MATCH FOUND**: **LLM IS BYPASSED**. System generates a pure Python deterministic response: *"No exact matches found. Here are closest schemes (Near Matches)..."*
+
+---
+
+## 3. SECURITY & PERFORMANCE
+- **Zero Hallucination**: No scheme is ever mentioned unless it exists in the `schemes_structured` collection.
+- **Latency**: Caching (Redis-style MongoDB cache) reduces cost and time for repeated queries.
+- **Language Locking**: State machine ensures the bot sticks to the user's chosen language throughout the session.

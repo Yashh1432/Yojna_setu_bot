@@ -1,0 +1,21 @@
+[
+  {
+    "input": "I am a 22 year old student from Gujarat with income 1.5 lakhs. Looking for scholarships.",
+    "expected_category": "Education",
+    "expected_age": 22,
+    "expected_income": 150000,
+    "expected_state": "gujarat"
+  },
+  {
+    "input": "I am a farmer from Punjab, my annual income is 50,000. Need help with seeds.",
+    "expected_category": "Agriculture",
+    "expected_state": "punjab",
+    "expected_income": 50000
+  },
+  {
+    "input": "Pregnancy help for women in Maharashtra, income is 2 lakhs.",
+    "expected_category": "Women",
+    "expected_state": "maharashtra",
+    "expected_income": 200000
+  }
+]

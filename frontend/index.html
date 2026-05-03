@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YojnaSetu Assistant</title>
+    <link rel="icon" type="image/png" href="favicon.png">
+    <link rel="stylesheet" href="style.css">
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Public_Sans:wght@700;800&display=swap" rel="stylesheet">
+    <!-- Material Symbols -->
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
+</head>
+<body class="whatsapp-theme">
+    <div id="app-container">
+        <!-- WhatsApp Header -->
+        <header class="chat-header">
+            <div class="header-left">
+                <button class="icon-btn back-btn">
+                    <span class="material-symbols-outlined">arrow_back</span>
+                </button>
+                <div class="avatar-wrapper">
+                    <div class="avatar">
+                        <span class="material-symbols-outlined">person</span>
+                    </div>
+                    <div class="status-indicator"></div>
+                </div>
+                <div class="header-info">
+                    <h1 id="bot-name">YojnaSetu Assistant</h1>
+                    <p class="status-text">Online</p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <span class="material-symbols-outlined">videocam</span>
+                <span class="material-symbols-outlined">call</span>
+                <span class="material-symbols-outlined">more_vert</span>
+            </div>
+        </header>
+
+        <!-- Chat Area -->
+        <main id="messages" class="chat-area">
+            <!-- Date Separator -->
+            <div class="date-separator">
+                <span>Today</span>
+            </div>
+            
+            <!-- Messages will be appended here -->
+        </main>
+
+        <!-- Fixed Reply Chips Container -->
+        <!-- <div id="quick-replies" class="chips-container"> -->
+            <!-- Example Chips -->
+            <!-- <button onclick="sendQuickMessage('I am a farmer and need a scheme')" class="chip">Farmer Scheme</button>
+            <button onclick="sendQuickMessage('I am a student and need scholarship help')" class="chip">Student Help</button>
+            <button onclick="sendQuickMessage('Help')" class="chip">Help</button>
+        </div> -->
+
+        <!-- Input Section -->
+        <footer class="input-section">
+            <div class="input-left">
+                <span class="material-symbols-outlined">insert_emoticon</span>
+                <span class="material-symbols-outlined">attach_file</span>
+            </div>
+            <div class="input-wrapper">
+                <input type="text" id="user-input" placeholder="Type a message..." onkeypress="handleKeyPress(event)" autocomplete="off">
+            </div>
+            <div class="input-right">
+                <!-- <button id="mic-btn" onclick="toggleRecording()" class="action-btn mic-btn">
+                    <span class="material-symbols-outlined">mic</span>
+                </button> -->
+                <button id="send-btn" onclick="sendMessage()" class="action-btn send-btn">
+                    <span class="material-symbols-outlined">send</span>
+                </button>
+            </div>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
