@@ -19,7 +19,9 @@ sentencepiece==0.1.99
 
 # Voice / Audio
 SpeechRecognition==3.10.0
+faster-whisper
 gTTS==2.5.1
+pydub
 
 # OCR
 pytesseract==0.3.10

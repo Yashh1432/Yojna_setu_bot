@@ -1,4 +1,5 @@
-const phoneNumber = "ui_testing_user_" + Math.floor(Math.random() * 1000); 
+const phoneNumber = "ui_testing_user_" + Math.floor(Math.random() * 1000);
+window.phoneNumber = phoneNumber;
 
 let isRecording = false;
 let mediaRecorder;
@@ -187,15 +188,14 @@ async function sendApiRequest(payload) {
     }
 }
 
-async function sendVoiceApiRequest(audioBlob) {
+async function sendVoiceApiRequest(audioBlob, filename = "voice.webm") {
     appendSystemMessage("Processing voice...");
     
     try {
         const formData = new FormData();
         formData.append("phone_number", phoneNumber);
         formData.append("input_type", "voice");
-        
-        formData.append("audio", audioBlob, "audio_clip.wav");
+        formData.append("audio", audioBlob, filename);
         
         const response = await fetch('/api/chat', {
             method: 'POST',
@@ -220,13 +220,17 @@ async function toggleRecording() {
             mediaRecorder = new MediaRecorder(stream);
             
             mediaRecorder.ondataavailable = event => {
-                audioChunks.push(event.data);
+                if (event.data.size > 0) {
+                    audioChunks.push(event.data);
+                }
             };
             
             mediaRecorder.onstop = () => {
-                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                const mimeType = mediaRecorder.mimeType || "audio/webm";
+                const extension = mimeType.includes("ogg") ? "ogg" : (mimeType.includes("mp4") ? "m4a" : "webm");
+                const audioBlob = new Blob(audioChunks, { type: mimeType });
                 audioChunks = [];
-                sendVoiceApiRequest(audioBlob);
+                sendVoiceApiRequest(audioBlob, `voice.${extension}`);
                 stream.getTracks().forEach(track => track.stop());
             };
             
