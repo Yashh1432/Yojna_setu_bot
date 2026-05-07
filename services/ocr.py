@@ -23,7 +23,7 @@ def _get_nlp():
 def _get_pytesseract():
     try:
         import pytesseract
-        tess_path = os.getenv("TESSERACT_PATH")
+        tess_path = os.getenv("TESSERACT_CMD")
         if tess_path:
             pytesseract.pytesseract.tesseract_cmd = tess_path
         return pytesseract
