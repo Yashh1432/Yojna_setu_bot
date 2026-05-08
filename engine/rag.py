@@ -6,12 +6,28 @@ Grounds eligibility decisions in MongoDB data, not LLM hallucination.
 import json
 import os
 import logging
+import re
 from datetime import datetime
 import uuid
+
+from engine.validator import analyze_category_text
 
 logger = logging.getLogger("engine.rag")
 
 SCHEMES_MONGO_COLLECTION = "schemes_structured"
+
+CANONICAL_DATASET_CATEGORY = {
+    "education": "Education",
+    "agriculture": "Agriculture",
+    "health": "Health",
+    "employment": "Employment",
+    "women_child": "Women & Child",
+    "finance_business": "Financial Assistance",
+    "housing": "Housing",
+    "senior_citizen": "Senior Citizen",
+    "disability": "Disability",
+    "social_welfare": "Others",
+}
 
 # ── Quality gate (mirrors orchestrator logic) ──
 def _is_quality_scheme(scheme: dict) -> bool:
@@ -33,6 +49,15 @@ def _get_db():
         return db_client.db
     except Exception:
         return None
+
+
+def _normalize_category_lookup(category: str) -> str | None:
+    analysis = analyze_category_text(category or "")
+    canonical = str(analysis.get("canonical_category") or "").strip().lower()
+    if canonical in CANONICAL_DATASET_CATEGORY:
+        return canonical
+    fallback = str(category or "").strip().lower().replace(" ", "_")
+    return fallback if fallback in CANONICAL_DATASET_CATEGORY else None
 
 def sync_schemes_to_mongo(json_path: str | None = None) -> int:
     """
@@ -117,31 +142,42 @@ def retrieve_schemes(category: str, state: str | None = None, language: str | No
         return []
 
     try:
-        cursor = db[SCHEMES_MONGO_COLLECTION].find(
-            {"category": {"$regex": category, "$options": "i"}},
-            {
-                "scheme_id": 1,
-                "scheme_name": 1,
-                "category": 1,
-                "eligibility": 1,
-                "benefits": 1,
-                "state": 1,
-                "documents_required": 1,
-                "application_link": 1,
-                "eligibility_criteria": 1,
-                "_id": 0,
-            }
-        ).limit(limit)
+        projection = {
+            "scheme_id": 1,
+            "scheme_name": 1,
+            "category": 1,
+            "normalized_category": 1,
+            "eligibility": 1,
+            "benefits": 1,
+            "state": 1,
+            "documents_required": 1,
+            "application_link": 1,
+            "eligibility_criteria": 1,
+            "_id": 0,
+        }
 
-        schemes = list(cursor)
+        normalized_category = _normalize_category_lookup(category)
+        schemes: list[dict] = []
+        if normalized_category:
+            exact_query = {
+                "$or": [
+                    {"normalized_category": normalized_category},
+                    {"category": CANONICAL_DATASET_CATEGORY.get(normalized_category)},
+                ]
+            }
+            schemes = list(db[SCHEMES_MONGO_COLLECTION].find(exact_query, projection).limit(limit))
 
         if not schemes:
-            # Fallback: text search on name / benefits
+            safe_regex = re.escape(str(category or "").strip())
             cursor = db[SCHEMES_MONGO_COLLECTION].find(
-                {"$or": [
-                    {"scheme_name": {"$regex": category, "$options": "i"}},
-                    {"benefits": {"$regex": category, "$options": "i"}}
-                ]}
+                {
+                    "$or": [
+                        {"category": {"$regex": safe_regex, "$options": "i"}},
+                        {"scheme_name": {"$regex": safe_regex, "$options": "i"}},
+                        {"benefits": {"$regex": safe_regex, "$options": "i"}},
+                    ]
+                },
+                projection,
             ).limit(limit)
             schemes = list(cursor)
 

@@ -40,7 +40,7 @@ CHECK_AGAIN_MESSAGES = {
     for code in LANGS
 }
 
-OPTIONS_MENU = {code: "1 Reset | 2 Change Language | 3 Help | 4 Check Eligibility" for code in LANGS}
+OPTIONS_MENU = {code: "1 Reset | 2 Change Language | 3 Help" for code in LANGS}
 
 ASK_QUESTIONS = {
     "age": {code: "What is your age?" for code in LANGS},

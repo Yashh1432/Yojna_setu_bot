@@ -9,6 +9,7 @@ from difflib import get_close_matches
 from typing import Any
 
 from core.logger import get_logger
+from services.embedding_service import semantic_match
 
 logger = get_logger("engine.validator")
 
@@ -54,6 +55,13 @@ INDIAN_STATES = [
     "daman",
     "diu",
 ]
+
+STATE_ALIASES: dict[str, str] = {
+    "up": "uttar pradesh",
+    "uttarpradesh": "uttar pradesh",
+    "उत्तर प्रदेश": "uttar pradesh",
+    "उत्तरप्रदेश": "uttar pradesh",
+}
 
 GENDER_NORMALIZE = {
     "male": "male",
@@ -120,6 +128,7 @@ CATEGORY_ALIAS: dict[str, str] = {
     "oldage": "senior_citizen",
     "pension": "senior_citizen",
     "elderly": "senior_citizen",
+    "retired": "senior_citizen",
     "vridh": "senior_citizen",
     "vruddh": "senior_citizen",
     "vayo": "senior_citizen",
@@ -195,6 +204,8 @@ CATEGORY_ALIAS: dict[str, str] = {
     "subsidy": "finance_business",
     "credit": "finance_business",
     "entrepreneur": "finance_business",
+    "startup": "finance_business",
+    "udyami": "finance_business",
     "bank": "finance_business",
     "mudra": "finance_business",
     "ऋण": "finance_business",
@@ -208,6 +219,11 @@ CATEGORY_ALIAS: dict[str, str] = {
     "housing": "housing",
     "house": "housing",
     "awas": "housing",
+    "awash": "housing",
+    "aawas": "housing",
+    "avas": "housing",
+    "આવાસ": "housing",
+    "મકાન": "housing",
     "home": "housing",
     "shelter": "housing",
     "आवास": "housing",
@@ -254,12 +270,198 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "health": ["health", "aarogya", "arogya", "આરોગ્ય", "medical", "hospital", "treatment"],
     "employment": ["job", "rojgar", "employment", "skill", "work", "naukri", "apprentice"],
     "women & child": ["women", "mahila", "widow", "vidhwa", "vidhva", "single mother", "beti", "child", "girl"],
-    "financial assistance": ["loan", "finance", "business", "subsidy", "credit", "entrepreneur", "mudra", "bank"],
-    "housing": ["house", "awas", "housing", "home", "shelter"],
-    "senior citizen": ["senior", "old age", "pension", "elderly", "vridh", "vruddh", "vayo", "बुजुर्ग", "વૃદ્ધ"],
+    "financial assistance": ["loan", "finance", "business", "subsidy", "credit", "entrepreneur", "startup", "udyami", "mudra", "bank"],
+    "housing": ["house", "awas", "awash", "aawas", "avas", "housing", "આવાસ", "મકાન", "home", "shelter"],
+    "senior citizen": ["senior", "old age", "pension", "elderly", "retired", "vridh", "vruddh", "vayo", "बुजुर्ग", "વૃદ્ધ"],
     "disability": ["disability", "disabled", "divyang", "handicap", "दिव्यांग", "विकलांग", "દિવ્યાંગ"],
     "others": ["other", "general"],
 }
+
+
+CANONICAL_CATEGORY_KEYS: dict[str, str] = {
+    "education": "education",
+    "agriculture": "agriculture",
+    "health": "health",
+    "employment": "employment",
+    "women & child": "women_child",
+    "financial assistance": "finance_business",
+    "housing": "housing",
+    "senior citizen": "senior_citizen",
+    "disability": "disability",
+    "others": "social_welfare",
+}
+
+CANONICAL_CATEGORY_DESCRIPTIONS: dict[str, str] = {
+    "education": "student scholarship school college education learning support",
+    "agriculture": "farmer kisan crop farming irrigation agriculture support",
+    "health": "medical treatment hospital aarogya health insurance support",
+    "employment": "job employment skill training livelihood rojgar support",
+    "women_child": "women widow mother girl child welfare support",
+    "finance_business": "loan startup subsidy business entrepreneur credit support",
+    "housing": "house housing awas awash aawas avas home shelter support",
+    "senior_citizen": "senior citizen retired pension elderly old age support",
+    "disability": "disability disabled divyang assistive support",
+    "social_welfare": "general social welfare family assistance support",
+}
+
+SUBCATEGORY_CATEGORY_HINTS: dict[str, str] = {
+    "pension": "senior_citizen",
+    "scholarship": "education",
+    "subsidy": "finance_business",
+    "insurance": "health",
+    "training": "employment",
+    "maternity": "women_child",
+    "ration": "social_welfare",
+    "pilgrimage": "senior_citizen",
+}
+
+
+def _normalize_lookup_text(text: str) -> str:
+    return " ".join(str(text or "").strip().lower().split())
+
+
+def _contains_term(source: str, term: str) -> bool:
+    token = _normalize_lookup_text(term)
+    if not source or not token:
+        return False
+    if source == token:
+        return True
+    return re.search(rf"(?<!\w){re.escape(token)}(?!\w)", source) is not None
+
+
+def _readable_category(category: str) -> str:
+    return str(category or "").replace("_", " ").strip()
+
+
+def _add_scored_terms(
+    scores: dict[str, float],
+    matched_terms: dict[str, list[str]],
+    *,
+    category: str,
+    terms: list[str],
+    base_score: float,
+) -> None:
+    clean_terms: list[str] = []
+    seen_terms: set[str] = set()
+    for term in terms:
+        token = _normalize_lookup_text(term)
+        if token and token not in seen_terms:
+            clean_terms.append(token)
+            seen_terms.add(token)
+    if not clean_terms:
+        return
+    scores[category] = scores.get(category, 0.0) + base_score + (0.12 * max(0, len(clean_terms) - 1))
+    matched_terms.setdefault(category, [])
+    for token in clean_terms:
+        if token not in matched_terms[category]:
+            matched_terms[category].append(token)
+
+
+def analyze_category_text(text: str) -> dict[str, Any]:
+    source = _normalize_lookup_text(text)
+    if not source:
+        return {
+            "canonical_category": None,
+            "subcategory": None,
+            "intent_keywords": [],
+            "confidence": 0.0,
+            "secondary_categories": [],
+            "reason": "empty_input",
+        }
+
+    scores: dict[str, float] = {}
+    matched_terms: dict[str, list[str]] = {}
+    subcategory: str | None = None
+    reason = "no_match"
+
+    exact_hits: dict[str, list[str]] = {}
+    for alias, canonical in CATEGORY_ALIAS.items():
+        if _contains_term(source, alias):
+            exact_hits.setdefault(canonical, []).append(alias)
+    for canonical, hits in exact_hits.items():
+        _add_scored_terms(scores, matched_terms, category=canonical, terms=hits, base_score=0.58)
+    if exact_hits:
+        reason = "exact_alias_match"
+
+    keyword_hits: dict[str, list[str]] = {}
+    for category_key, keywords in CATEGORY_KEYWORDS.items():
+        canonical = CANONICAL_CATEGORY_KEYS.get(category_key)
+        hits = [keyword for keyword in keywords if _contains_term(source, keyword)]
+        if canonical and hits:
+            keyword_hits.setdefault(canonical, []).extend(hits)
+    for canonical, hits in keyword_hits.items():
+        _add_scored_terms(scores, matched_terms, category=canonical, terms=hits, base_score=0.22)
+    if keyword_hits and reason == "no_match":
+        reason = "keyword_match"
+
+    for sub_key, sub_keywords in SUBCATEGORY_KEYWORDS.items():
+        hits = [keyword for keyword in sub_keywords if _contains_term(source, keyword)]
+        if not hits:
+            continue
+        if not subcategory:
+            subcategory = sub_key
+        hinted_category = SUBCATEGORY_CATEGORY_HINTS.get(sub_key)
+        if hinted_category:
+            _add_scored_terms(scores, matched_terms, category=hinted_category, terms=hits, base_score=0.18)
+        if reason == "no_match":
+            reason = "subcategory_match"
+
+    semantic_best_category: str | None = None
+    semantic_best_score = 0.0
+    for canonical, description in CANONICAL_CATEGORY_DESCRIPTIONS.items():
+        try:
+            similarity = float(semantic_match(source, description))
+        except Exception:
+            similarity = 0.0
+        if similarity >= 0.34:
+            scores[canonical] = max(scores.get(canonical, 0.0), similarity)
+            if similarity > semantic_best_score:
+                semantic_best_score = similarity
+                semantic_best_category = canonical
+    if semantic_best_category and reason == "no_match":
+        reason = "semantic_match"
+
+    if not scores:
+        return {
+            "canonical_category": None,
+            "subcategory": subcategory,
+            "intent_keywords": [],
+            "confidence": 0.0,
+            "secondary_categories": [],
+            "reason": reason,
+        }
+
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    primary_category, primary_score = ranked[0]
+    confidence = round(min(0.99, primary_score / 1.2), 2)
+    secondary_categories = [
+        category for category, score in ranked[1:]
+        if score >= 0.34 and category != primary_category
+    ]
+
+    if not subcategory and secondary_categories:
+        subcategory = _readable_category(secondary_categories[0])
+
+    keywords: list[str] = []
+    for category in [primary_category, *secondary_categories]:
+        for token in matched_terms.get(category, []):
+            if token not in keywords:
+                keywords.append(token)
+            if len(keywords) >= 5:
+                break
+        if len(keywords) >= 5:
+            break
+    if subcategory and subcategory not in keywords and len(keywords) < 5:
+        keywords.append(subcategory)
+
+    return {
+        "canonical_category": primary_category,
+        "subcategory": subcategory,
+        "intent_keywords": keywords[:5],
+        "confidence": confidence,
+        "secondary_categories": secondary_categories,
+        "reason": reason,
+    }
 
 
 def normalize_category(text: str) -> tuple[str | None, str | None]:
@@ -268,35 +470,8 @@ def normalize_category(text: str) -> tuple[str | None, str | None]:
     canonical_category matches actual dataset values (title-case).
     subcategory is an optional secondary signal for ranking.
     """
-    if not text:
-        return None, None
-    source = str(text).strip().lower()
-    if not source:
-        return None, None
-
-    # 1. Direct alias lookup (exact or substring)
-    canonical: str | None = None
-    for alias, cat in CATEGORY_ALIAS.items():
-        if alias in source:
-            canonical = cat
-            break
-
-    # 2. Keyword scan fallback
-    if not canonical:
-        for cat_key, keywords in CATEGORY_KEYWORDS.items():
-            if any(kw in source for kw in keywords):
-                # Map to title-case dataset value
-                canonical = CATEGORY_ALIAS.get(cat_key) or cat_key.title()
-                break
-
-    # 3. Subcategory detection
-    subcategory: str | None = None
-    for sub_key, sub_keywords in SUBCATEGORY_KEYWORDS.items():
-        if any(kw in source for kw in sub_keywords):
-            subcategory = sub_key
-            break
-
-    return canonical, subcategory
+    analysis = analyze_category_text(text)
+    return analysis.get("canonical_category"), analysis.get("subcategory")
 
 
 def _coerce_int(value) -> int | None:
@@ -323,12 +498,20 @@ def _normalize_income(value) -> int | None:
 def normalize_state_name(raw_state: Any) -> str | None:
     if raw_state is None:
         return None
-    state_str = str(raw_state).strip().lower()
+    raw_text = str(raw_state).strip()
+    state_str = raw_text.lower()
     if not state_str:
         return None
 
+    alias_match = STATE_ALIASES.get(raw_text) or STATE_ALIASES.get(state_str)
+    if alias_match:
+        return alias_match
+
+    if state_str in INDIAN_STATES:
+        return state_str
+
     for state in INDIAN_STATES:
-        if state_str == state or state_str in state or state in state_str:
+        if re.search(rf"(?<!\w){re.escape(state)}(?!\w)", state_str):
             return state
 
     matches = get_close_matches(state_str, INDIAN_STATES, n=1, cutoff=0.75)
@@ -350,10 +533,14 @@ def infer_scheme_category(*texts: Any) -> str | None:
     if not merged:
         return None
 
+    analysis = analyze_category_text(merged)
+    if analysis.get("canonical_category") and float(analysis.get("confidence") or 0.0) >= 0.45:
+        return str(analysis["canonical_category"])
+
     # Fast path: exact/substring keyword match (covers native scripts too).
     for category, keywords in CATEGORY_KEYWORDS.items():
         if any(str(keyword).lower() in merged for keyword in keywords):
-            return category
+            return CANONICAL_CATEGORY_KEYS.get(category, category)
 
     # Fuzzy/phonetic-ish path for romanized typos:
     # - Tokenize ASCII words only

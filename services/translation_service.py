@@ -71,7 +71,7 @@ class _IndicTranslator:
             logger.warning("Transformers not available; translation will fallback to input text.")
             return False
         try:
-            logger.info(f"Loading translation model {model_name} on {self.device}")
+            logger.info(f"Loading translation model {model_name} on {self.device} (local_files_only={self.local_files_only})")
             tokenizer = AutoTokenizer.from_pretrained(
                 model_name,
                 trust_remote_code=True,
@@ -90,21 +90,53 @@ class _IndicTranslator:
             return True
         except Exception as exc:
             self._failed_until[model_name] = time.monotonic() + self.fail_cooldown_sec
-            logger.error(f"Failed to load translation model {model_name}: {exc}")
+            error_msg = str(exc)
+            
+            logger.error(
+                f"Failed to load translation model {model_name}\n"
+                f"  local_files_only: {self.local_files_only}\n"
+                f"  Error: {error_msg}"
+            )
+            
+            # Detect JSON decode errors indicating corrupted huggingface cache
+            if "Expecting value: line 1 column 1 (char 0)" in error_msg or "JSONDecodeError" in error_msg:
+                logger.error(
+                    f"CRITICAL: The Hugging Face cache for {model_name} appears to be corrupted or incomplete.\n"
+                    "INSTRUCTIONS TO FIX CACHE CORRUPTION:\n"
+                    "1. Delete the corrupted cache directory for this model.\n"
+                    "   Usually located at: ~/.cache/huggingface/hub/models--ai4bharat--indictrans2-en-indic-1B (or indic-en-1B)\n"
+                    "   Or on Windows: %USERPROFILE%\\.cache\\huggingface\\hub\\\n"
+                    "2. Re-run the bot to download the model fresh.\n"
+                    "3. Alternatively, manually download the model and set INDICTRANS_EN_INDIC_PATH and INDICTRANS_INDIC_EN_PATH to the local directory."
+                )
+                
             return False
 
-    def _translate(self, text: str, model_name: str, source_tag: str, target_tag: str) -> str:
+    def _log_failure(self, *, source_lang: str, target_lang: str, text: str, error: str) -> None:
+        preview = " ".join(str(text or "").split())[:80]
+        logger.error(
+            {
+                "event": "translation_failed",
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "preview": preview,
+                "error": error[:160],
+            }
+        )
+
+    def _translate(self, text: str, model_name: str, source_tag: str, target_tag: str) -> tuple[str, bool]:
         if not text:
-            return ""
+            return "", False
         if source_tag == target_tag:
-            return text
+            return text, False
         cache_key = (model_name, source_tag, target_tag, text)
         cached = self._cache.get(cache_key)
         if cached is not None:
-            return cached
+            return cached, False
         if not self._load(model_name):
             self._cache_set(cache_key, text)
-            return text
+            self._log_failure(source_lang=source_tag, target_lang=target_tag, text=text, error="model_load_unavailable")
+            return text, True
         try:
             tokenizer = self._tokenizers[model_name]
             model = self._models[model_name]
@@ -121,14 +153,12 @@ class _IndicTranslator:
             )
             translated = tokenizer.decode(outputs[0], skip_special_tokens=True)
             self._cache_set(cache_key, translated)
-            return translated
+            return translated, False
         except Exception as exc:
-            logger.error(
-                "Translation inference failed",
-                extra={"model_name": model_name, "source_tag": source_tag, "target_tag": target_tag, "error": str(exc)},
-            )
+            self._failed_until[model_name] = time.monotonic() + self.fail_cooldown_sec
+            self._log_failure(source_lang=source_tag, target_lang=target_tag, text=text, error=str(exc))
             self._cache_set(cache_key, text)
-            return text
+            return text, True
 
     def _cache_set(self, key: tuple[str, str, str, str], value: str) -> None:
         self._cache[key] = value
@@ -137,12 +167,22 @@ class _IndicTranslator:
             self._cache.pop(oldest, None)
 
     def to_english(self, text: str, source_lang: str) -> str:
+        translated, _ = self.to_english_with_meta(text, source_lang)
+        return translated
+
+    def to_english_with_meta(self, text: str, source_lang: str) -> tuple[str, dict[str, Any]]:
         source_tag = LANG_TO_TAG.get(source_lang, "eng_Latn")
-        return self._translate(text=text, model_name=self.indic_en_path, source_tag=source_tag, target_tag="eng_Latn")
+        translated, failed = self._translate(text=text, model_name=self.indic_en_path, source_tag=source_tag, target_tag="eng_Latn")
+        return translated, {"translation_failed": failed, "source_lang": source_lang, "target_lang": "en"}
 
     def from_english(self, text: str, target_lang: str) -> str:
+        translated, _ = self.from_english_with_meta(text, target_lang)
+        return translated
+
+    def from_english_with_meta(self, text: str, target_lang: str) -> tuple[str, dict[str, Any]]:
         target_tag = LANG_TO_TAG.get(target_lang, "eng_Latn")
-        return self._translate(text=text, model_name=self.en_indic_path, source_tag="eng_Latn", target_tag=target_tag)
+        translated, failed = self._translate(text=text, model_name=self.en_indic_path, source_tag="eng_Latn", target_tag=target_tag)
+        return translated, {"translation_failed": failed, "source_lang": "en", "target_lang": target_lang}
 
 
 _translator = _IndicTranslator()
@@ -160,11 +200,25 @@ def translate_to_english(text: str, source_lang: str) -> str:
     if source_lang == "en":
         return text
     try:
-        translated = _translator.to_english(text, source_lang)
+        translated, _ = _translator.to_english_with_meta(text, source_lang)
         return translated.strip() if translated and translated.strip() else text
     except Exception as exc:
         logger.error(f"translate_to_english fallback due to error: {exc}")
         return text
+
+
+def translate_to_english_with_meta(text: str, source_lang: str) -> tuple[str, dict[str, Any]]:
+    if not text:
+        return "", {"translation_failed": False, "source_lang": source_lang, "target_lang": "en"}
+    if source_lang == "en":
+        return text, {"translation_failed": False, "source_lang": source_lang, "target_lang": "en"}
+    try:
+        translated, meta = _translator.to_english_with_meta(text, source_lang)
+        clean = translated.strip() if translated and translated.strip() else text
+        return clean, meta
+    except Exception as exc:
+        logger.error(f"translate_to_english_with_meta fallback due to error: {exc}")
+        return text, {"translation_failed": True, "source_lang": source_lang, "target_lang": "en"}
 
 
 def translate_from_english(text: str, target_lang: str) -> str:
@@ -179,8 +233,22 @@ def translate_from_english(text: str, target_lang: str) -> str:
     if target_lang == "en":
         return text
     try:
-        translated = _translator.from_english(text, target_lang)
+        translated, _ = _translator.from_english_with_meta(text, target_lang)
         return translated.strip() if translated and translated.strip() else text
     except Exception as exc:
         logger.error(f"translate_from_english fallback due to error: {exc}")
         return text
+
+
+def translate_from_english_with_meta(text: str, target_lang: str) -> tuple[str, dict[str, Any]]:
+    if not text:
+        return "", {"translation_failed": False, "source_lang": "en", "target_lang": target_lang}
+    if target_lang == "en":
+        return text, {"translation_failed": False, "source_lang": "en", "target_lang": target_lang}
+    try:
+        translated, meta = _translator.from_english_with_meta(text, target_lang)
+        clean = translated.strip() if translated and translated.strip() else text
+        return clean, meta
+    except Exception as exc:
+        logger.error(f"translate_from_english_with_meta fallback due to error: {exc}")
+        return text, {"translation_failed": True, "source_lang": "en", "target_lang": target_lang}

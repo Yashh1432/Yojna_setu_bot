@@ -81,6 +81,26 @@ class TestCacheSystem(unittest.TestCase):
         miss = cache_service.get_response_cache(profile, schemes, language="hi")
         self.assertIsNone(miss)
 
+    def test_low_confidence_extraction_is_not_cached(self):
+        payload = {"intent": "profile_update", "category": "health", "confidence": 0.2}
+        cache_service.set_extraction_cache("medical help", payload, language="en", expected_field="category")
+        miss = cache_service.get_extraction_cache("medical help", language="en", expected_field="category")
+        self.assertIsNone(miss)
+
+    def test_response_cache_stores_context_metadata(self):
+        profile = {"category": "health", "state": "Gujarat", "income": 200000, "age": 40}
+        schemes = ["Health Aid"]
+        cache_service.set_response_cache(profile, schemes, "Health response", language="en", confidence=0.95)
+        self.assertEqual(len(self.col.docs), 1)
+        doc = next(iter(self.col.docs.values()))
+        self.assertEqual(doc.get("category"), "health")
+        self.assertEqual(doc.get("state"), "gujarat")
+        self.assertEqual(doc.get("language"), "en")
+        self.assertEqual(doc.get("confidence"), 0.95)
+        self.assertTrue(doc.get("profile_hash"))
+        self.assertIn("created_at", doc)
+        self.assertIn("expires_at", doc)
+
 
 if __name__ == "__main__":
     unittest.main()

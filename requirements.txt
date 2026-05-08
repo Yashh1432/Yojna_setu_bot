@@ -9,6 +9,8 @@ requests==2.31.0
 
 # AI / LLM
 google-generativeai
+google-genai
+sarvamai
 openai==1.30.0
 httpx==0.27.2
 

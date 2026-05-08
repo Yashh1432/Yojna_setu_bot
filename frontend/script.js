@@ -115,6 +115,7 @@ function appendBotMessage(data) {
 
             const stateLabel = (s.state && s.state.trim()) ? s.state.trim() : "All India";
             const applyLink  = (s.application_link && s.application_link.trim()) ? s.application_link.trim() : "";
+            const safeSchemeName = String(s.scheme_name || "scheme").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 
             innerHtml += `
             <div class="scheme-card" id="${cardId}">
@@ -146,7 +147,7 @@ function appendBotMessage(data) {
                     ${whyHtml ? `<div class="scheme-section"><span class="scheme-section-title">🎯 Why Matched</span>${whyHtml}</div>` : ""}
                     <div class="scheme-card-actions">
                         ${applyLink ? `<a class="apply-link" href="${applyLink}" target="_blank" rel="noopener noreferrer">🌐 Official Portal</a>` : ""}
-                        <button class="apply-btn" onclick="sendQuickMessage('apply for ${s.scheme_name}')">Apply Now →</button>
+                        <button class="apply-btn" onclick="sendQuickMessage('apply for ${safeSchemeName}')">Apply Now →</button>
                     </div>
                 </div>
             </div>`;

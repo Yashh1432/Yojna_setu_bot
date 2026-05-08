@@ -16,6 +16,7 @@ from typing import Any
 from core.logger import get_logger
 from engine.engine import classify_user_intent_llm, classify_user_intent_semantic, normalize_text_light
 from engine.eligibility import filter_schemes
+from engine.validator import normalize_state_name
 from services.cache_service import get_rag_cache, set_rag_cache
 from services.embedding_service import semantic_match
 
@@ -125,11 +126,17 @@ def summarize_benefit(text: Any, max_chars: int = 150) -> str:
 
 
 def _norm_state(value: Any) -> str:
-    return str(value or "").strip().lower()
+    text = normalize_text_light(str(value or "")).strip().lower()
+    if not text:
+        return ""
+    if text in {"all india", "national", "central", "india", "nationwide", "pan india"}:
+        return "all india"
+    normalized = normalize_state_name(text)
+    return normalized or text
 
 
 def _is_all_india(state: Any) -> bool:
-    return _norm_state(state) in {"all india", "national", "central", "india"}
+    return _norm_state(state) == "all india"
 
 
 def state_allowed(user_state: str | None, scheme_state: str | None) -> bool:
@@ -163,6 +170,21 @@ def _readable_category(category: str | None) -> str:
         "social_welfare": "social welfare",
     }
     return labels.get(_to_taxonomy(category), "selected")
+
+
+def _no_exact_state_fallback_message(*, language: str, user_category: str, user_state: str) -> str:
+    if language == "hi" and user_category == "housing" and user_state == "uttar pradesh":
+        return "उत्तर प्रदेश के लिए कोई सटीक आवास योजना नहीं मिली। उपलब्ध राष्ट्रीय/All India योजनाएँ दिखा रहा हूँ।"
+    readable_state = user_state.title() if user_state else "your state"
+    return f"No exact {readable_state} schemes found. Showing national/All India schemes only."
+
+
+def _no_geo_match_message(*, language: str, user_category: str, user_state: str) -> str:
+    if language == "hi" and user_category == "housing" and user_state == "uttar pradesh":
+        return "उत्तर प्रदेश के लिए कोई उपयुक्त आवास योजना नहीं मिली। कृपया दूसरी श्रेणी आज़माएँ या अधिक जानकारी दें।"
+    readable_category = _readable_category(user_category)
+    readable_state = user_state.title() if user_state else "your state"
+    return f"No matching {readable_category.lower()} schemes found for {readable_state}. Try another category or share more details."
 
 
 def _hard_filter_schemes(schemes: list[dict], profile: dict, user_category: str) -> tuple[list[dict], list[dict], list[dict]]:
@@ -554,11 +576,14 @@ def explain_match(scheme: dict, profile: dict) -> list[str]:
 
     scheme_state_raw = scheme.get("state") or ""
     scheme_state = _norm_state(scheme_state_raw)
+    user_state = _norm_state(profile.get("state"))
     if scheme_state:
         if _is_all_india(scheme_state):
-            reasons.append("Scheme is available at All India level.")
+            reasons.append("This is a national/All India scheme.")
+        elif user_state and scheme_state == user_state:
+            reasons.append(f"This scheme is available in {str(profile.get('state') or '').strip() or scheme_state.title()}.")
         else:
-            reasons.append(f"Scheme is available in {str(scheme_state_raw).strip()}.")
+            reasons.append(f"This scheme is available in {str(scheme_state_raw).strip() or scheme_state.title()}.")
 
     if user_category != "unknown" and scheme_category == user_category:
         reasons.append(f"Scheme category is {user_category.replace('_', ' ')}, matching your selected category.")
@@ -656,7 +681,11 @@ def recommend_schemes(profile: dict, query: str | None = None, top_k: int = 5) -
             prepared.append(enriched)
 
     if not prepared:
-        msg = f"Sorry, I could not find relevant {readable_category} schemes in the current dataset. Try another category or provide more details."
+        readable_state = str(profile.get("state") or "").strip()
+        if user_category != "unknown" and readable_state:
+            msg = f"No matching {readable_category.lower()} schemes found for {readable_state}. Showing All India schemes if available."
+        else:
+            msg = f"Sorry, I could not find relevant {readable_category} schemes in the current dataset. Try another category or provide more details."
         return {
             "schemes": [],
             "fallback_used": False,
@@ -677,12 +706,22 @@ def recommend_schemes(profile: dict, query: str | None = None, top_k: int = 5) -
         if fallback_all_india:
             selected_pool = fallback_all_india
             fallback_used = True
-            if readable_state:
-                fallback_message = f"No {readable_state}-specific schemes found. Showing national/All India schemes."
+            if user_state:
+                fallback_message = _no_exact_state_fallback_message(
+                    language=user_language,
+                    user_category=user_category,
+                    user_state=user_state,
+                )
         else:
             # Nothing found anywhere
             if income_rejected:
                 fallback_message = "No schemes matched your income criteria. Try a higher income range."
+            elif user_category != "unknown" and user_state:
+                fallback_message = _no_geo_match_message(
+                    language=user_language,
+                    user_category=user_category,
+                    user_state=user_state,
+                )
             elif user_category != "unknown":
                 fallback_message = f"Sorry, no {readable_category} schemes found for your profile in the current dataset."
             else:
@@ -713,16 +752,68 @@ def recommend_schemes(profile: dict, query: str | None = None, top_k: int = 5) -
     preferred = elig + [s for s in uncert if s not in elig]
     if not preferred:
         preferred = raw_candidates  # hard fallback: return semantically ranked if all filtered out
+    eligibility_by_name: dict[str, bool | None] = {}
+    for scheme in elig:
+        eligibility_by_name[str(scheme.get("scheme_name") or "").strip().lower()] = True
+    for scheme in uncert:
+        eligibility_by_name[str(scheme.get("scheme_name") or "").strip().lower()] = None
+    for scheme in filtered.get("ineligible") or []:
+        eligibility_by_name[str(scheme.get("scheme_name") or "").strip().lower()] = False
+
+    geo_safe_preferred: list[dict] = []
+    geo_rejected_count = 0
+    for scheme in preferred:
+        if state_allowed(user_state or None, scheme.get("state")):
+            geo_safe_preferred.append(scheme)
+            continue
+        geo_rejected_count += 1
+        logger.warning(
+            {
+                "event": "geo_rejected",
+                "reason": "geo_rejected: scheme_state != user_state and not_all_india",
+                "scheme_name": scheme.get("scheme_name"),
+                "user_state": user_state or None,
+                "scheme_state": _norm_state(scheme.get("state")) or None,
+            }
+        )
+
+    if user_state and not geo_safe_preferred:
+        if fallback_all_india:
+            fallback_message = _no_exact_state_fallback_message(
+                language=user_language,
+                user_category=user_category,
+                user_state=user_state,
+            )
+        else:
+            fallback_message = _no_geo_match_message(
+                language=user_language,
+                user_category=user_category,
+                user_state=user_state,
+            )
+        return {
+            "schemes": [],
+            "fallback_used": True,
+            "fallback_message": fallback_message,
+            "errors": [],
+            "eligibility": filtered,
+            "geo_rejected_count": geo_rejected_count,
+        }
+
     results: list[dict] = []
-    for scheme in preferred[:top_k]:
+    for scheme in geo_safe_preferred[:top_k]:
+        scheme_name = scheme.get("scheme_name", "Unknown Scheme")
+        score = float(scheme.get("score") or 0.0)
+        eligible = eligibility_by_name.get(str(scheme_name).strip().lower())
         results.append(
             {
                 "scheme_id": scheme.get("scheme_id") or scheme.get("scheme_name", "unknown"),
-                "scheme_name": scheme.get("scheme_name", "Unknown Scheme"),
+                "scheme_name": scheme_name,
                 "state": scheme.get("state") or "Unknown",
                 "category": scheme.get("category"),
                 "description": scheme.get("description"),
                 "eligibility": scheme.get("eligibility"),
+                "eligible": eligible,
+                "score": score,
                 "benefits_summary": summarize_benefit(
                     scheme.get("benefits_summary") or scheme.get("benefits") or scheme.get("description"),
                     max_chars=150,
@@ -743,4 +834,5 @@ def recommend_schemes(profile: dict, query: str | None = None, top_k: int = 5) -
         "fallback_message": fallback_message,
         "errors": errors,
         "eligibility": filtered,
+        "geo_rejected_count": geo_rejected_count,
     }

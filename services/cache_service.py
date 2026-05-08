@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from core.logger import get_logger
+from services.confidence_service import CONFIDENCE_THRESHOLD
 
 logger = get_logger("services.cache_service")
 
@@ -127,10 +128,21 @@ def response_key(profile: dict, scheme_ids: list[str], language: str | None) -> 
     payload = {
         "type": "response",
         "profile_signature": profile_signature(profile),
+        "category": normalize_cache_text((profile or {}).get("category") or ""),
+        "state": normalize_cache_text((profile or {}).get("state") or ""),
         "scheme_ids": list(scheme_ids or []),
         "language": (language or "en").strip().lower(),
     }
     return _hash(_to_json(payload))
+
+
+def _normalize_confidence(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
 
 
 def _get_doc(key: str, expected_type: str):
@@ -158,10 +170,17 @@ def _set_doc(
     language: str = "en",
     expected_field: str | None = None,
     profile_sig: str | None = None,
+    category: str | None = None,
+    state: str | None = None,
+    confidence: float | None = None,
     model_name: str = "unknown",
     latency_ms: int = 0,
 ) -> None:
     if response in (None, "", [], {}):
+        return
+    normalized_confidence = _normalize_confidence(confidence)
+    if normalized_confidence is not None and normalized_confidence < CONFIDENCE_THRESHOLD:
+        logger.info({"event": "cache_skip_low_confidence", "type": cache_type, "confidence": normalized_confidence})
         return
     col = _get_collection()
     if col is None:
@@ -174,8 +193,12 @@ def _set_doc(
             "input_str": str(input_str or "")[:2000],
             "response": response,
             "profile_signature": profile_sig,
+            "profile_hash": profile_sig,
             "language": (language or "en").strip().lower(),
             "expected_field": (expected_field or "").strip().lower() or None,
+            "category": normalize_cache_text(category or ""),
+            "state": normalize_cache_text(state or ""),
+            "confidence": normalized_confidence,
             "model_name": model_name,
             "latency_ms": int(latency_ms or 0),
             "created_at": now,
@@ -226,6 +249,9 @@ def set_extraction_cache(
         response=result,
         language=language,
         expected_field=expected_field,
+        category=category,
+        state=state,
+        confidence=result.get("confidence"),
         model_name=model_name,
         latency_ms=latency_ms,
     )
@@ -266,6 +292,9 @@ def set_rag_cache(
         input_str=f"{category}|{subcategory}|{state}",
         response=schemes,
         language=language or "en",
+        category=category,
+        state=state,
+        confidence=1.0,
         model_name=model_name,
         latency_ms=latency_ms,
     )
@@ -286,6 +315,7 @@ def set_response_cache(
     scheme_ids: list[str],
     response_text: str,
     language: str | None = "en",
+    confidence: float | None = None,
     model_name: str = "deterministic",
     latency_ms: int = 0,
 ) -> None:
@@ -299,6 +329,9 @@ def set_response_cache(
         response=response_text,
         language=language or "en",
         profile_sig=profile_signature(profile),
+        category=str((profile or {}).get("category") or ""),
+        state=str((profile or {}).get("state") or ""),
+        confidence=confidence,
         model_name=model_name,
         latency_ms=latency_ms,
     )

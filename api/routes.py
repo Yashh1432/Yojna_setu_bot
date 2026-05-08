@@ -13,7 +13,7 @@ from models.db_client import db_client
 from models.feedback_model import feedback_model
 from models.users import user_model
 from services.translation_service import translate_from_english
-from services.voice import clean_stt_text, speech_to_text, text_to_speech
+from services.voice import _VOICE_ENABLED, clean_stt_text, speech_to_text, text_to_speech
 
 logger = get_logger("api.routes")
 
@@ -66,6 +66,21 @@ def chat():
 
     user_lang_hint = "en"
     if input_type == "voice":
+        # ------------------------------------------------------------------
+        # Guard: VOICE_ENABLED=false — return clear message, text chat unaffected
+        # ------------------------------------------------------------------
+        if not _VOICE_ENABLED:
+            logger.info({"event": "voice_disabled", "trace_id": trace_id, "phone": phone_number})
+            return jsonify({
+                "response": "Voice input is currently disabled. Please use text chat.",
+                "audio_url": "",
+                "status": "success",
+                "schemes": [],
+                "errors": [],
+                "user_state": "voice_disabled",
+                "trace_id": trace_id,
+            }), 200
+
         try:
             user_doc = user_model.get_user(phone_number)
             if not user_doc:
@@ -79,21 +94,43 @@ def chat():
         if audio_file:
             original_name = audio_file.filename or ""
             extension = os.path.splitext(original_name)[1].lower()
-            if extension not in {".wav", ".webm", ".mp3", ".m4a", ".ogg", ".mp4", ".mpeg"}:
+            allowed_exts = {".wav", ".webm", ".mp3", ".m4a", ".ogg", ".mp4", ".mpeg"}
+            if extension not in allowed_exts:
+                logger.warning(
+                    f"Voice route: unexpected extension '{extension}' for file '{original_name}' "
+                    f"— defaulting to .webm | trace_id={trace_id}"
+                )
                 extension = ".webm"
 
             tmp_path = os.path.join(_AUDIO_DIR, f"tmp_{uuid.uuid4().hex}{extension}")
             try:
                 audio_file.save(tmp_path)
+                saved_size = os.path.getsize(tmp_path) if os.path.isfile(tmp_path) else 0
+                logger.info(
+                    f"Voice route: audio saved | path={tmp_path} | ext={extension} "
+                    f"| size_bytes={saved_size} | lang_hint={user_lang_hint} | trace_id={trace_id}"
+                )
                 raw_text = speech_to_text(tmp_path, language_hint=user_lang_hint)
                 message = clean_stt_text(raw_text, user_lang_hint)
+                logger.info(
+                    f"Voice route: STT result | text_len={len(message)} "
+                    f"| preview={message[:60]!r} | trace_id={trace_id}"
+                )
             finally:
                 try:
                     os.remove(tmp_path)
                 except Exception:
                     pass
+        else:
+            logger.warning(
+                f"Voice route: no audio file in request | trace_id={trace_id} | phone={phone_number}"
+            )
 
         if len(message.strip()) < 3:
+            logger.warning(
+                f"Voice route: STT returned insufficient text ('{message.strip()}') "
+                f"— returning retry prompt | trace_id={trace_id}"
+            )
             error_menu = MENU_TEXTS.get(user_lang_hint, MENU_TEXT)
             error_prompt = "Could not understand audio, please repeat"
             if user_lang_hint != "en":
@@ -101,11 +138,12 @@ def chat():
                 if translated_prompt and translated_prompt.strip():
                     error_prompt = translated_prompt
             error_response = f"{error_prompt}\n\n{error_menu}"
+            # TTS is best-effort — if it fails, text response is still returned
             error_audio = text_to_speech(error_response, language_code=user_lang_hint)
 
             return jsonify({
                 "response": error_response,
-                "audio_url": error_audio,
+                "audio_url": error_audio or "",
                 "status": "success",
                 "schemes": [],
                 "errors": [],
@@ -162,7 +200,7 @@ def chat():
     if not isinstance(out.get("schemes"), list):
         out["schemes"] = []
 
-    if input_type == "voice":
+    if input_type == "voice" and _VOICE_ENABLED:
         user_lang = user_lang_hint
         try:
             user_doc, _ = user_model.create_or_get_user(phone_number)
@@ -170,7 +208,9 @@ def chat():
                 user_lang = user_doc.get("language") or "en"
         except Exception:
             pass
-        out["audio_url"] = text_to_speech(response_text, language_code=user_lang)
+        # TTS is best-effort — text response is already set in out["response"]
+        audio_url = text_to_speech(response_text, language_code=user_lang)
+        out["audio_url"] = audio_url or ""  # empty string, never None
 
     try:
         messages_model.log_message(

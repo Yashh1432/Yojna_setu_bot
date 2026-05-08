@@ -349,7 +349,7 @@ class TestStateOutputFixes(unittest.TestCase):
             mapping = {
                 answer_en: answer_gu,
                 question_en: question_gu,
-                "1 Reset\n2 Change Language\n3 Help\n4 Check Eligibility": "1 રીસેટ\n2 ભાષા બદલો\n3 મદદ\n4 પાત્રતા તપાસો",
+                "1 Reset\n2 Change Language\n3 Help": "1 રીસેટ\n2 ભાષા બદલો\n3 મદદ",
             }
             return mapping.get(text, text)
 
@@ -385,7 +385,7 @@ class TestStateOutputFixes(unittest.TestCase):
             mapping = {
                 ("Language updated to Hindi.\n\nWhich type of scheme do you need (education, agriculture, health, employment, housing, finance, women)?", "hi"): "भाषा Hindi में अपडेट की गई.\n\nआपको किस प्रकार की योजना चाहिए?",
                 ("Which state do you live in?", "hi"): "आप किस राज्य में रहते हैं?",
-                ("1 Reset\n2 Change Language\n3 Help\n4 Check Eligibility", "hi"): "1 रीसेट\n2 भाषा बदलें\n3 सहायता\n4 पात्रता जाँचें",
+                ("1 Reset\n2 Change Language\n3 Help", "hi"): "1 रीसेट\n2 भाषा बदलें\n3 सहायता",
             }
             return mapping.get((text, lang), text)
 
@@ -407,7 +407,7 @@ class TestStateOutputFixes(unittest.TestCase):
             mapping = {
                 ("Language updated to Kannada.\n\nWhich type of scheme do you need (education, agriculture, health, employment, housing, finance, women)?", "kn"): "ಭಾಷೆ Kannada ಗೆ ಸೆಟ್ ಮಾಡಲಾಗಿದೆ.\n\nನಿಮಗೆ ಯಾವ ಯೋಜನೆ ಬೇಕು?",
                 ("Which state do you live in?", "kn"): "ನೀವು ಯಾವ ರಾಜ್ಯದಲ್ಲಿ ವಾಸಿಸುತ್ತೀರಿ?",
-                ("1 Reset\n2 Change Language\n3 Help\n4 Check Eligibility", "kn"): "1 ರೀಸೆಟ್\n2 ಭಾಷೆ ಬದಲಿಸಿ\n3 ಸಹಾಯ\n4 ಅರ್ಹತೆ ಪರಿಶೀಲಿಸಿ",
+                ("1 Reset\n2 Change Language\n3 Help", "kn"): "1 ರೀಸೆಟ್\n2 ಭಾಷೆ ಬದಲಿಸಿ\n3 ಸಹಾಯ",
             }
             return mapping.get((text, lang), text)
 
@@ -729,8 +729,8 @@ class TestStateOutputFixes(unittest.TestCase):
         reasons_by_name = {s["scheme_name"]: " | ".join(s.get("why_match") or []) for s in result["schemes"]}
         all_reasons = " ".join(reasons_by_name.values())
 
-        self.assertIn("National / All India scheme", reasons_by_name.get("National Health Plan", ""))
-        self.assertIn("Available in Gujarat", reasons_by_name.get("Gujarat Health Plan", ""))
+        self.assertIn("national/All India scheme", reasons_by_name.get("National Health Plan", ""))
+        self.assertIn("available in Gujarat", reasons_by_name.get("Gujarat Health Plan", ""))
         self.assertNotIn("Available for Gujarat", all_reasons)
 
     @patch("engine.orchestrator.load_scheme_dataset")

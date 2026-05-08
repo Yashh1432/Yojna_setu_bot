@@ -21,6 +21,7 @@ from typing import Any
 from core.logger import get_logger
 from core.sanitizer import sanitize_for_llm
 from engine.llm_router import router
+from engine.validator import analyze_category_text
 from services.cache_service import get_extraction_cache, set_extraction_cache
 from services.embedding_service import semantic_match
 from services.translation_service import translate_from_english
@@ -594,6 +595,21 @@ def classify_user_intent_llm(
             reason=str(cached.get("reason") or ""),
         )
 
+    hybrid = analyze_category_text(" ".join(part for part in [original_text, english] if str(part or "").strip()))
+    hybrid_intent = _build_intent_payload(
+        category=hybrid.get("canonical_category") or "unknown",
+        subcategory=hybrid.get("subcategory"),
+        intent_keywords=hybrid.get("intent_keywords") or [],
+        confidence=float(hybrid.get("confidence") or 0.0),
+        reason=str(hybrid.get("reason") or "hybrid_match"),
+    )
+    if (
+        hybrid_intent.get("canonical_category") != "unknown"
+        and float(hybrid_intent.get("confidence") or 0.0) >= 0.6
+    ):
+        set_extraction_cache(cache_key_text, hybrid_intent, lang, "intent_classifier")
+        return hybrid_intent
+
     request_payload = {
         "original_text": sanitize_for_llm(original_text or ""),
         "english_translation": sanitize_for_llm(english or ""),
@@ -602,20 +618,40 @@ def classify_user_intent_llm(
     }
     parsed = router.generate_json(json.dumps(request_payload, ensure_ascii=False), INTENT_CLASSIFIER_PROMPT)
     if not isinstance(parsed, dict):
-        semantic = classify_user_intent_semantic(original_text, english, lang, conversation_context)
-        set_extraction_cache(cache_key_text, semantic, lang, "intent_classifier")
-        return semantic
+        return hybrid_intent if hybrid_intent.get("canonical_category") != "unknown" else classify_user_intent_semantic(
+            original_text,
+            english,
+            lang,
+            conversation_context,
+        )
 
-    intent = _build_intent_payload(
+    llm_intent = _build_intent_payload(
         category=parsed.get("canonical_category"),
         subcategory=parsed.get("subcategory"),
         intent_keywords=parsed.get("intent_keywords") or [],
         confidence=float(_to_number(parsed.get("confidence")) or 0.0),
         reason=str(parsed.get("reason") or ""),
     )
+    llm_confidence = float(llm_intent.get("confidence") or 0.0)
+    hybrid_confidence = float(hybrid_intent.get("confidence") or 0.0)
 
-    set_extraction_cache(cache_key_text, intent, lang, "intent_classifier")
-    return intent
+    if llm_intent.get("canonical_category") == "unknown" or llm_confidence < hybrid_confidence:
+        chosen = hybrid_intent
+    else:
+        combined_keywords = list(hybrid_intent.get("intent_keywords") or [])
+        for keyword in llm_intent.get("intent_keywords") or []:
+            if keyword not in combined_keywords:
+                combined_keywords.append(keyword)
+        chosen = _build_intent_payload(
+            category=llm_intent.get("canonical_category") or hybrid_intent.get("canonical_category") or "unknown",
+            subcategory=llm_intent.get("subcategory") or hybrid_intent.get("subcategory"),
+            intent_keywords=combined_keywords[:5],
+            confidence=max(llm_confidence, hybrid_confidence),
+            reason=str(llm_intent.get("reason") or hybrid_intent.get("reason") or ""),
+        )
+
+    set_extraction_cache(cache_key_text, chosen, lang, "intent_classifier")
+    return chosen
 
 
 def infer_language_selection_llm(user_text: str) -> dict[str, Any]:

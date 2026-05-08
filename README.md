@@ -87,3 +87,30 @@ The `/static/audio/` directory must be writable by the web server user.
 
 ---
 *Created by Antigravity AI Assistant.*
+
+
+
+
+
+Plan ONLY. Do not implement yet.
+
+Create a safe upgrade plan to replace or supplement:
+- gTTS with Indic-friendly TTS
+- faster_whisper base CPU with better Indic STT
+
+Compare options:
+1. Keep gTTS + faster_whisper for demo
+2. Use Bhashini APIs
+3. Use AI4Bharat/Vakyansh models
+4. Use cloud STT/TTS fallback
+
+For each option include:
+- cost
+- setup difficulty
+- offline/online requirement
+- Gujarati/Hindi support
+- latency
+- college demo suitability
+
+Final recommendation:
+Choose the safest option for my current YojnaSetuBot without breaking working text chat.

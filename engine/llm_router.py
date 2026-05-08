@@ -5,6 +5,7 @@ import logging
 import hashlib
 import time
 from datetime import datetime
+from typing import Any
 from dotenv import load_dotenv
 
 # Upgraded Gemini SDK
@@ -12,15 +13,19 @@ try:
     from google import genai
     from google.genai import types
     HAS_GENAI = True
+    GENAI_IMPORT_ERROR = ""
 except ImportError:
     HAS_GENAI = False
+    GENAI_IMPORT_ERROR = "google-genai package not installed"
 
 # Sarvam AI Support
 try:
     from sarvamai import SarvamAI
     HAS_SARVAM = True
+    SARVAM_IMPORT_ERROR = ""
 except ImportError:
     HAS_SARVAM = False
+    SARVAM_IMPORT_ERROR = "sarvamai package not installed"
 
 from core.logger import get_logger
 
@@ -39,6 +44,8 @@ class LLMRouter:
         self._key_cooldown: dict[int, float] = {}  # {key_index: cooldown_until_monotonic}
         self._key_usage: dict[int, dict] = {}       # {key_index: {"count": int, "window_start": float}}
         self._rpm_limit = int(os.getenv("GEMINI_RPM_LIMIT", "14"))  # per-key requests per minute
+        self._last_gemini_error = "not_attempted"
+        self._last_sarvam_error = "not_attempted"
 
         if HAS_GENAI:
             keys_raw = os.getenv("GEMINI_API_KEYS", os.getenv("GEMINI_API_KEY", ""))
@@ -63,7 +70,17 @@ class LLMRouter:
             except Exception as e:
                 logger.warning(f"LLMRouter: Sarvam config error: {e}")
 
+        self._log_startup_health()
         self._ensure_cache_ttl_index()
+
+    def _log_startup_health(self) -> None:
+        logger.info(
+            "LLMRouter startup health: Gemini package=%s, Gemini API keys=%d, Sarvam package=%s, Sarvam API key=%s",
+            "available" if HAS_GENAI else f"missing ({GENAI_IMPORT_ERROR})",
+            len(self.gemini_keys),
+            "available" if HAS_SARVAM else f"missing ({SARVAM_IMPORT_ERROR})",
+            "available" if bool(os.getenv("SARVAM_API_KEY")) else "missing",
+        )
 
     def _ensure_cache_ttl_index(self):
         """Create TTL indexes for legacy and new cache collections."""
@@ -139,6 +156,7 @@ class LLMRouter:
     def call_gemini(self, prompt: str, sys_prompt: str) -> str | None:
         """Tier 1: Gemini API with round-robin key rotation (V2 SDK)."""
         if not self.gemini_active:
+            self._last_gemini_error = "gemini_inactive_or_no_keys"
             return None
 
         # Safety settings for the new SDK
@@ -148,11 +166,13 @@ class LLMRouter:
             types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
             types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
         ]
+        errors: list[str] = []
 
         for attempt in range(len(self.gemini_keys)):
             idx, key = self._next_gemini_key()
             if key is None:
                 logger.warning("LLMRouter: All Gemini keys exhausted/rate-limited.")
+                errors.append("all_keys_exhausted_or_rate_limited")
                 break
 
             try:
@@ -169,8 +189,10 @@ class LLMRouter:
                 )
                 if res and res.text:
                     self._record_usage(idx)
+                    self._last_gemini_error = ""
                     logger.debug(f"LLMRouter: Gemini responded (key #{idx}).")
                     return res.text
+                errors.append(f"key_{idx}:empty_response")
             except Exception as e:
                 err_str = str(e)
                 if "429" in err_str or "quota" in err_str.lower():
@@ -178,8 +200,10 @@ class LLMRouter:
                 else:
                     logger.warning(f"LLMRouter: Gemini error (key #{idx}): {e}")
                     self._mark_cooldown(idx, duration=10.0)
+                errors.append(f"key_{idx}:{err_str[:200]}")
                 continue
 
+        self._last_gemini_error = "; ".join(errors) if errors else "gemini_failed_unknown"
         return None
 
     # ─────────────────────────────────────────────────────────────
@@ -189,6 +213,7 @@ class LLMRouter:
     def call_sarvam(self, prompt: str, sys_prompt: str) -> str | None:
         """Tier 2: Sarvam AI fallback."""
         if not self.sarvam_active:
+            self._last_sarvam_error = "sarvam_inactive_or_missing_key"
             return None
         try:
             # Fixed Sarvam call: completions() instead of completions.create()
@@ -203,11 +228,30 @@ class LLMRouter:
             # Response is a CreateChatCompletionResponse object
             text = res.choices[0].message.content.strip()
             if text:
+                self._last_sarvam_error = ""
                 logger.debug(f"LLMRouter: Sarvam AI ({self.sarvam_model}) responded.")
                 return text
+            self._last_sarvam_error = "sarvam_empty_response"
         except Exception as e:
+            self._last_sarvam_error = str(e)[:200]
             logger.warning(f"LLMRouter: Sarvam error: {e}")
         return None
+
+    @staticmethod
+    def _fallback_text(reason: str) -> str:
+        message = (
+            "I am temporarily unable to process this request with AI right now. "
+            "Please continue and I will use deterministic fallback handling."
+        )
+        return f"{message} ({reason})"
+
+    @staticmethod
+    def _fallback_json(reason: str) -> dict[str, Any]:
+        return {
+            "_fallback": True,
+            "reason": reason,
+            "confidence": 0.0,
+        }
 
     # ─────────────────────────────────────────────────────────────
     # CACHE: MongoDB with TTL
@@ -242,7 +286,7 @@ class LLMRouter:
     # PUBLIC API
     # ─────────────────────────────────────────────────────────────
 
-    def generate_text(self, prompt: str, sys_prompt: str = "") -> str | None:
+    def generate_text(self, prompt: str, sys_prompt: str = "", **_: Any) -> str:
         cached = self._get_cache(prompt, sys_prompt)
         if cached:
             return cached
@@ -256,21 +300,24 @@ class LLMRouter:
         else:
             res = self.call_sarvam(prompt, sys_prompt)
             if res:
-                model_used = f"sarvam:{self.sarvam_model}"
+                model_used = f"sarvam:{getattr(self, 'sarvam_model', 'sarvam')}"
 
         if not res:
-            logger.error("LLMRouter: All tiers failed (generate_text).")
-            return None
+            reason = f"gemini={self._last_gemini_error}; sarvam={self._last_sarvam_error}"
+            logger.error(f"LLMRouter: All tiers failed (generate_text). {reason}")
+            return self._fallback_text(reason)
 
         latency_ms = int((time.monotonic() - start_time) * 1000)
         res = self._strip_thinking(res)
         self._set_cache(prompt, sys_prompt, res, model_used=model_used, latency=latency_ms)
         return res
 
-    def generate_json(self, prompt: str, sys_prompt: str = "") -> dict | None:
+    def generate_json(self, prompt: str, sys_prompt: str = "", **_: Any) -> dict:
         cached = self._get_cache(prompt, sys_prompt)
         if cached:
-            return self.scrub_to_json(cached)
+            parsed_cached = self.scrub_to_json(cached)
+            if parsed_cached:
+                return parsed_cached
 
         start_time = time.monotonic()
         model_used = "unknown"
@@ -281,11 +328,12 @@ class LLMRouter:
         else:
             res = self.call_sarvam(prompt, sys_prompt)
             if res:
-                model_used = f"sarvam:{self.sarvam_model}"
+                model_used = f"sarvam:{getattr(self, 'sarvam_model', 'sarvam')}"
 
         if not res:
-            logger.error("LLMRouter: All tiers failed (generate_json).")
-            return None
+            reason = f"gemini={self._last_gemini_error}; sarvam={self._last_sarvam_error}"
+            logger.error(f"LLMRouter: All tiers failed (generate_json). {reason}")
+            return self._fallback_json(reason)
 
         parsed = self.scrub_to_json(res)
 
@@ -294,7 +342,9 @@ class LLMRouter:
             self._set_cache(prompt, sys_prompt, res, model_used=model_used, latency=latency_ms)
             return parsed
 
-        return None
+        reason = "invalid_or_non_json_model_output"
+        logger.error(f"LLMRouter: JSON parse failed after LLM response (generate_json). {reason}")
+        return self._fallback_json(reason)
 
     def scrub_to_json(self, text: str) -> dict | None:
         """Extract valid JSON from LLM output, stripping markdown fences and think blocks."""

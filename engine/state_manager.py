@@ -24,7 +24,12 @@ from services.cache_service import (
     set_extraction_cache,
     set_response_cache,
 )
-from services.translation_service import translate_from_english, translate_to_english
+from services.confidence_service import extraction_confidence
+from services.translation_service import (
+    translate_from_english,
+    translate_from_english_with_meta,
+    translate_to_english,
+)
 
 # Late import to avoid circular; used only for scheme card translation via LLM
 def _llm_translate(text: str, target_lang: str) -> str:
@@ -62,7 +67,7 @@ STATIC_TRANSLATIONS: dict[str, dict[str, str]] = {
         "state": "\u0906\u092a \u0915\u093f\u0938 \u0930\u093e\u091c\u094d\u092f \u092e\u0947\u0902 \u0930\u0939\u0924\u0947 \u0939\u0948\u0902?",
         "age": "\u0906\u092a\u0915\u0940 \u0909\u092e\u094d\u0930 \u0915\u094d\u092f\u093e \u0939\u0948?",
         "annual_income": "\u0906\u092a\u0915\u0940 \u0935\u093e\u0930\u094d\u0937\u093f\u0915 \u092a\u093e\u0930\u093f\u0935\u093e\u0930\u093f\u0915 \u0906\u092f \u0915\u093f\u0924\u0928\u0940 \u0939\u0948?",
-        "menu": "1 \u0930\u0940\u0938\u0947\u091f\n2 \u092d\u093e\u0937\u093e \u092c\u0926\u0932\u0947\u0902\n3 \u0938\u0939\u093e\u092f\u0924\u093e\n4 \u092a\u093e\u0924\u094d\u0930\u0924\u093e \u091c\u093e\u0901\u091a\u0947\u0902",
+        "menu": "1 \u0930\u0940\u0938\u0947\u091f\n2 \u092d\u093e\u0937\u093e \u092c\u0926\u0932\u0947\u0902\n3 \u0938\u0939\u093e\u092f\u0924\u093e",
         "help": "\u0905\u092a\u0928\u0940 \u091c\u093e\u0928\u0915\u093e\u0930\u0940 \u0938\u094d\u0935\u093e\u092d\u093e\u0935\u093f\u0915 \u0930\u0942\u092a \u0938\u0947 \u0938\u093e\u091d\u093e \u0915\u0930\u0947\u0902\u0964",
         "invalid_occupation_numeric": "\u0915\u0943\u092a\u092f\u093e \u0905\u092a\u0928\u093e \u092a\u0947\u0936\u093e \u0936\u092c\u094d\u0926\u094b\u0902 \u092e\u0947\u0902 \u0932\u093f\u0916\u0947\u0902, \u091c\u0948\u0938\u0947 \u0915\u093f\u0938\u093e\u0928, \u091b\u093e\u0924\u094d\u0930 \u092f\u093e \u0921\u094d\u0930\u093e\u0907\u0935\u0930\u0964",
     },
@@ -73,7 +78,7 @@ STATIC_TRANSLATIONS: dict[str, dict[str, str]] = {
         "state": "\u0ba8\u0bc0\u0b99\u0bcd\u0b95\u0bb3\u0bcd \u0b8e\u0ba8\u0bcd\u0ba4 \u0bae\u0bbe\u0ba8\u0bbf\u0bb2\u0ba4\u0bcd\u0ba4\u0bbf\u0bb2\u0bcd \u0bb5\u0b9a\u0bbf\u0b95\u0bcd\u0b95\u0bbf\u0bb1\u0bc0\u0bb0\u0bcd\u0b95\u0bb3\u0bcd?",
         "age": "\u0b89\u0b99\u0bcd\u0b95\u0bb3\u0bcd \u0bb5\u0baf\u0ba4\u0bc1 \u0b8e\u0ba9\u0bcd\u0ba9?",
         "annual_income": "\u0b89\u0b99\u0bcd\u0b95\u0bb3\u0bcd \u0b86\u0ba3\u0bcd\u0b9f\u0bc1 \u0b95\u0bc1\u0b9f\u0bc1\u0bae\u0bcd\u0baa \u0bb5\u0bb0\u0bc1\u0bae\u0bbe\u0ba9\u0bae\u0bcd \u0b8e\u0ba9\u0bcd\u0ba9?",
-        "menu": "1 \u0bb0\u0bc0\u0b9a\u0bc6\u0b9f\u0bcd\n2 \u0bae\u0bca\u0bb4\u0bbf\u0baf\u0bc8 \u0bae\u0bbe\u0bb1\u0bcd\u0bb1\u0bb5\u0bc1\u0bae\u0bcd\n3 \u0b89\u0ba4\u0bb5\u0bbf\n4 \u0ba4\u0b95\u0bc1\u0ba4\u0bbf \u0b9a\u0bb0\u0bbf\u0baa\u0bbe\u0bb0\u0bcd\u0b95\u0bcd\u0b95\u0bb5\u0bc1\u0bae\u0bcd",
+        "menu": "1 \u0bb0\u0bc0\u0b9a\u0bc6\u0b9f\u0bcd\n2 \u0bae\u0bca\u0bb4\u0bbf\u0baf\u0bc8 \u0bae\u0bbe\u0bb1\u0bcd\u0bb1\u0bb5\u0bc1\u0bae\u0bcd\n3 \u0b89\u0ba4\u0bb5\u0bbf",
         "help": "\u0b89\u0b99\u0bcd\u0b95\u0bb3\u0bcd \u0bb5\u0bbf\u0bb5\u0bb0\u0b99\u0bcd\u0b95\u0bb3\u0bc8 \u0b9a\u0bca\u0bb2\u0bcd\u0bb2\u0bc1\u0b99\u0bcd\u0b95\u0bb3\u0bcd.",
         "invalid_occupation_numeric": "\u0b89\u0b99\u0bcd\u0b95\u0bb3\u0bcd \u0ba4\u0bca\u0bb4\u0bbf\u0bb2\u0bc8 \u0b8e\u0ba3\u0bcd\u0ba3\u0bbf\u0bb2\u0bcd \u0b85\u0bb2\u0bcd\u0bb2\u0bbe\u0bae\u0bb2\u0bcd \u0bb5\u0bbe\u0bb0\u0bcd\u0ba4\u0bcd\u0ba4\u0bc8\u0b95\u0bb3\u0bbf\u0bb2\u0bcd \u0b89\u0bb3\u0bcd\u0bb3\u0bbf\u0b9f\u0bb5\u0bc1\u0bae\u0bcd, \u0b89\u0ba4\u0bbe\u0bb0\u0ba3\u0bae\u0bbe\u0b95 \u0bb5\u0bbf\u0bb5\u0b9a\u0bbe\u0baf\u0bbf, \u0bae\u0bbe\u0ba3\u0bb5\u0bb0\u0bcd \u0b85\u0bb2\u0bcd\u0bb2\u0ba4\u0bc1 \u0b93\u0b9f\u0bcd\u0b9f\u0bc1\u0ba8\u0bb0\u0bcd.",
     },
@@ -84,26 +89,26 @@ STATIC_TRANSLATIONS: dict[str, dict[str, str]] = {
         "state": "\u0aa4\u0aae\u0ac7 \u0a95\u0aaf\u0abe \u0ab0\u0abe\u0a9c\u0acd\u0aaf\u0aae\u0abe\u0a82 \u0ab0\u0ab9\u0acb \u0a9b\u0acb?",
         "age": "\u0aa4\u0aae\u0abe\u0ab0\u0ac0 \u0a89\u0a82\u0aae\u0ab0 \u0a95\u0ac7\u0a9f\u0ab2\u0ac0 \u0a9b\u0ac7?",
         "annual_income": "\u0aa4\u0aae\u0abe\u0ab0\u0ac0 \u0ab5\u0abe\u0ab0\u0acd\u0ab7\u0abf\u0a95 \u0a86\u0ab5\u0a95 \u0a95\u0ac7\u0a9f\u0ab2\u0ac0 \u0a9b\u0ac7?",
-        "menu": "1 \u0ab0\u0ac0\u0ab8\u0ac7\u0a9f\n2 \u0aad\u0abe\u0ab7\u0abe \u0aac\u0aa6\u0ab2\u0acb\n3 \u0aae\u0aa6\u0aa6\n4 \u0aaa\u0abe\u0aa4\u0acd\u0ab0\u0aa4\u0abe \u0aa4\u0aaa\u0abe\u0ab8\u0acb",
+        "menu": "1 \u0ab0\u0ac0\u0ab8\u0ac7\u0a9f\n2 \u0aad\u0abe\u0ab7\u0abe \u0aac\u0aa6\u0ab2\u0acb\n3 \u0aae\u0aa6\u0aa6",
         "help": "\u0aa4\u0aae\u0abe\u0ab0\u0ac0 \u0aae\u0abe\u0ab9\u0abf\u0aa4\u0ac0 \u0ab8\u0acd\u0ab5\u0abe\u0aad\u0abe\u0ab5\u0abf\u0a95 \u0ab0\u0ac0\u0aa4\u0ac7 \u0ab6\u0ac7\u0ab0 \u0a95\u0ab0\u0acb.",
         "invalid_occupation_numeric": "\u0a95\u0ac3\u0aaa\u0abe \u0a95\u0ab0\u0ac0\u0aa8\u0ac7 \u0aa4\u0aae\u0abe\u0ab0\u0acb \u0ab5\u0acd\u0aaf\u0ab5\u0ab8\u0abe\u0aaf \u0ab6\u0aac\u0acd\u0aa6\u0acb\u0aae\u0abe\u0a82 \u0ab2\u0a96\u0acb, \u0a9c\u0ac7\u0ab5\u0abe \u0a95\u0ac7 \u0a96\u0ac7\u0aa1\u0ac2\u0aa4, \u0ab5\u0abf\u0aa6\u0acd\u0aaf\u0abe\u0ab0\u0acd\u0aa5\u0ac0 \u0a85\u0aa5\u0ab5\u0abe \u0aa1\u0acd\u0ab0\u0abe\u0a88\u0ab5\u0ab0.",
     },
     "kn": {
         "language_set": "\u0cad\u0cbe\u0cb7\u0cc6\u0caf\u0ca8\u0ccd\u0ca8\u0cc1 {lang_name} \u0c97\u0cc6 \u0cb8\u0cc6\u0c9f\u0ccd \u0cae\u0cbe\u0ca1\u0cb2\u0cbe\u0c97\u0cbf\u0ca6\u0cc6.",
         "occupation": "\u0ca8\u0cbf\u0cae\u0ccd\u0cae \u0c89\u0ca6\u0ccd\u0caf\u0ccb\u0c97 \u0c8f\u0ca8\u0cc1?",
-        "menu": "1 \u0cb0\u0cc0\u0cb8\u0cc6\u0c9f\u0ccd\n2 \u0cad\u0cbe\u0cb7\u0cc6 \u0cac\u0ca6\u0cb2\u0cbf\u0cb8\u0cbf\n3 \u0cb8\u0cb9\u0cbe\u0caf\n4 \u0c85\u0cb0\u0ccd\u0cb9\u0ca4\u0cc6 \u0caa\u0cb0\u0cbf\u0cb6\u0cc0\u0cb2\u0cbf\u0cb8\u0cbf",
+        "menu": "1 \u0cb0\u0cc0\u0cb8\u0cc6\u0c9f\u0ccd\n2 \u0cad\u0cbe\u0cb7\u0cc6 \u0cac\u0ca6\u0cb2\u0cbf\u0cb8\u0cbf\n3 \u0cb8\u0cb9\u0cbe\u0caf",
         "invalid_occupation_numeric": "\u0ca6\u0caf\u0cb5\u0cbf\u0c9f\u0ccd\u0c9f\u0cc1 \u0ca8\u0cbf\u0cae\u0ccd\u0cae \u0c89\u0ca6\u0ccd\u0caf\u0ccb\u0c97\u0cb5\u0ca8\u0ccd\u0ca8\u0cc1 \u0cb6\u0cac\u0ccd\u0ca6\u0c97\u0cb3\u0cb2\u0ccd\u0cb2\u0cbf \u0cb9\u0cc7\u0cb3\u0cbf, \u0c89\u0ca6\u0cbe\u0cb9\u0cb0\u0ca3\u0cc6\u0c97\u0cc6 \u0cb0\u0cc8\u0ca4, \u0cb5\u0cbf\u0ca6\u0ccd\u0caf\u0cbe\u0cb0\u0ccd\u0ca5\u0cbf \u0c85\u0ca5\u0cb5\u0cbe \u0ca1\u0ccd\u0cb0\u0cc8\u0cb5\u0cb0\u0ccd.",
     },
     "bn": {
         "language_set": "\u09ad\u09be\u09b7\u09be {lang_name} \u098f \u0986\u09aa\u09a1\u09c7\u099f \u0995\u09b0\u09be \u09b9\u09df\u09c7\u099b\u09c7\u0964",
         "occupation": "\u0986\u09aa\u09a8\u09be\u09b0 \u09aa\u09c7\u09b6\u09be \u0995\u09c0?",
-        "menu": "1 \u09b0\u09bf\u09b8\u09c7\u099f\n2 \u09ad\u09be\u09b7\u09be \u09aa\u09b0\u09bf\u09ac\u09b0\u09cd\u09a4\u09a8\n3 \u09b8\u09be\u09b9\u09be\u09af\u09cd\u09af\n4 \u09af\u09cb\u0997\u09cd\u09af\u09a4\u09be \u09af\u09be\u099a\u09be\u0987",
+        "menu": "1 \u09b0\u09bf\u09b8\u09c7\u099f\n2 \u09ad\u09be\u09b7\u09be \u09aa\u09b0\u09bf\u09ac\u09b0\u09cd\u09a4\u09a8\n3 \u09b8\u09be\u09b9\u09be\u09af\u09cd\u09af",
         "invalid_occupation_numeric": "\u09a6\u09df\u09be \u0995\u09b0\u09c7 \u09b8\u0982\u0996\u09cd\u09af\u09be\u09b0 \u09aa\u09b0\u09bf\u09ac\u09b0\u09cd\u09a4\u09c7 \u09aa\u09c7\u09b6\u09be \u09b6\u09ac\u09cd\u09a6\u09c7 \u09b2\u09bf\u0996\u09c1\u09a8, \u09af\u09c7\u09ae\u09a8 \u099a\u09be\u09b7\u09bf, \u09b6\u09bf\u0995\u09cd\u09b7\u09be\u09b0\u09cd\u09a5\u09c0 \u09ac\u09be \u09a1\u09cd\u09b0\u09be\u0987\u09ad\u09be\u09b0\u0964",
     },
     "mr": {
         "language_set": "\u092d\u093e\u0937\u093e {lang_name} \u092e\u0927\u094d\u092f\u0947 \u0905\u092a\u0921\u0947\u091f \u0915\u0947\u0932\u0940.",
         "occupation": "\u0924\u0941\u092e\u091a\u093e \u0935\u094d\u092f\u0935\u0938\u093e\u092f \u0915\u093e\u092f \u0906\u0939\u0947?",
-        "menu": "1 \u0930\u093f\u0938\u0947\u091f\n2 \u092d\u093e\u0937\u093e \u092c\u0926\u0932\u093e\n3 \u092e\u0926\u0924\n4 \u092a\u093e\u0924\u094d\u0930\u0924\u093e \u0924\u092a\u093e\u0938\u093e",
+        "menu": "1 \u0930\u093f\u0938\u0947\u091f\n2 \u092d\u093e\u0937\u093e \u092c\u0926\u0932\u093e\n3 \u092e\u0926\u0924",
         "invalid_occupation_numeric": "\u0915\u0943\u092a\u092f\u093e \u0906\u092a\u0932\u093e \u0935\u094d\u092f\u0935\u0938\u093e\u092f \u0936\u092c\u094d\u0926\u093e\u0924 \u0932\u093f\u0939\u093e, \u0909\u0926\u093e\u0939\u0930\u0923\u093e\u0930\u094d\u0925 \u0936\u0947\u0924\u0915\u0930\u0940, \u0935\u093f\u0926\u094d\u092f\u093e\u0930\u094d\u0925\u0940 \u0915\u093f\u0902\u0935\u093e \u0921\u094d\u0930\u093e\u092f\u0935\u094d\u0939\u0930.",
     },
     "ml": {
@@ -113,7 +118,7 @@ STATIC_TRANSLATIONS: dict[str, dict[str, str]] = {
         "state": "\u0d28\u0d3f\u0d19\u0d4d\u0d19\u0d7e \u0d0f\u0d24\u0d4d \u0d38\u0d02\u0d38\u0d4d\u0d25\u0d3e\u0d28\u0d24\u0d4d\u0d24\u0d3e\u0d23\u0d4d \u0d24\u0d3e\u0d2e\u0d38\u0d3f\u0d15\u0d4d\u0d15\u0d41\u0d28\u0d4d\u0d28\u0d24\u0d4d?",
         "age": "\u0d28\u0d3f\u0d19\u0d4d\u0d19\u0d33\u0d41\u0d1f\u0d46 \u0d2a\u0d4d\u0d30\u0d3e\u0d2f\u0d02 \u0d0e\u0d24\u0d4d\u0d30?",
         "annual_income": "\u0d35\u0d3e\u0d7c\u0d37\u0d3f\u0d15 \u0d15\u0d41\u0d1f\u0d41\u0d02\u0d2c \u0d35\u0d30\u0d41\u0d2e\u0d3e\u0d28\u0d02 \u0d0e\u0d24\u0d4d\u0d30?",
-        "menu": "1 \u0d31\u0d40\u0d38\u0d46\u0d31\u0d4d\u0d31\u0d4d\n2 \u0d2d\u0d3e\u0d37 \u0d2e\u0d3e\u0d31\u0d4d\u0d31\u0d41\u0d15\n3 \u0d38\u0d39\u0d3e\u0d2f\u0d02\n4 \u0d05\u0d7c\u0d39\u0d24 \u0d2a\u0d30\u0d3f\u0d36\u0d4b\u0d27\u0d28",
+        "menu": "1 \u0d31\u0d40\u0d38\u0d46\u0d31\u0d4d\u0d31\u0d4d\n2 \u0d2d\u0d3e\u0d37 \u0d2e\u0d3e\u0d31\u0d4d\u0d31\u0d41\u0d15\n3 \u0d38\u0d39\u0d3e\u0d2f\u0d02",
         "help": "\u0d24\u0d19\u0d4d\u0d19\u0d33\u0d41\u0d1f\u0d46 \u0d35\u0d3f\u0d35\u0d30\u0d19\u0d4d\u0d19\u0d7e \u0d38\u0d4d\u0d35\u0d3e\u0d2d\u0d3e\u0d35\u0d3f\u0d15\u0d2e\u0d3e\u0d2f\u0d3f \u0d05\u0d2f\u0d15\u0d4d\u0d15\u0d42.",
         "invalid_occupation_numeric": "\u0d26\u0d2f\u0d35\u0d3e\u0d2f\u0d3f \u0d28\u0d3f\u0d19\u0d4d\u0d19\u0d33\u0d41\u0d1f\u0d46 \u0d24\u0d4a\u0d34\u0d3f\u0d7d \u0d35\u0d3e\u0d15\u0d4d\u0d15\u0d41\u0d15\u0d33\u0d3f\u0d7d \u0d0e\u0d34\u0d41\u0d24\u0d41\u0d15, \u0d09\u0d26\u0d3e\u0d39\u0d30\u0d23\u0d24\u0d4d\u0d24\u0d3f\u0d28\u0d4d \u0d15\u0d7c\u0d37\u0d15\u0d7b, \u0d35\u0d3f\u0d26\u0d4d\u0d2f\u0d3e\u0d7c\u0d24\u0d4d\u0d25\u0d3f \u0d05\u0d32\u0d4d\u0d32\u0d46\u0d19\u0d4d\u0d15\u0d3f\u0d7d \u0d21\u0d4d\u0d30\u0d48\u0d35\u0d7c.",
     },
@@ -129,6 +134,12 @@ def _get_static(lang: str, key: str, **kwargs: str) -> str | None:
         except KeyError:
             pass
     return entry
+
+
+def get_ui_text(lang: str | None, key: str, fallback: str) -> str:
+    """Small wrapper for static UI text until full locale migration is safe."""
+    cached = _get_static(_pick_lang(lang), key)
+    return cached if cached else fallback
 
 
 SUPPORTED_LANGUAGES = {
@@ -147,7 +158,7 @@ SUPPORTED_LANGUAGES = {
     "ur": "Urdu",
 }
 
-_MENU_EN = "1 Reset\n2 Change Language\n3 Help\n4 Check Eligibility"
+_MENU_EN = "1 Reset\n2 Change Language\n3 Help"
 MENU_TEXTS: dict[str, str] = {"en": _MENU_EN}
 for _code, _cache in STATIC_TRANSLATIONS.items():
     if "menu" in _cache:
@@ -164,6 +175,7 @@ LABELS = {
     "help": "Share your details naturally and I will help with matching schemes.",
     "no_match": "I could not find strong matches from the current dataset.",
     "response_reset": "Your profile is reset. Let us start again.",
+    "invalid_menu_digit": "Please choose 1 Reset, 2 Change Language, or 3 Help - or type your scheme need in words.",
     "schemes_found": "Here are the matching schemes for you:",
 }
 
@@ -355,12 +367,13 @@ REQUIRED_FIELDS_BY_CATEGORY: dict[str, list[str]] = {
     "disability": ["state", "age", "annual_income"],
 }
 
-RESET_COMMANDS = {"reset", "restart", "start over"}
-LANGUAGE_CHANGE_COMMANDS = {"change language", "switch language"}
-HELP_COMMANDS = {"help"}
-CHECK_COMMANDS = {"check eligibility", "eligibility check", "eligibility"}
-DIGIT_MENU_INTENTS = {"1": "reset", "2": "change_language", "3": "help", "4": "check_eligibility"}
+RESET_COMMANDS = {"reset", "restart", "start over", "\u0ab0\u0ac0\u0ab8\u0ac7\u0a9f"}
+LANGUAGE_CHANGE_COMMANDS = {"change language", "switch language", "\u0aad\u0abe\u0ab7\u0abe \u0aac\u0aa6\u0ab2\u0acb"}
+HELP_COMMANDS = {"help", "\u0aae\u0aa6\u0aa6"}
+CHECK_COMMANDS = set()
+DIGIT_MENU_INTENTS = {"1": "reset", "2": "change_language", "3": "help"}
 APPLY_COMMANDS = {"apply", "application", "apply scheme", "apply for", "select scheme", "choose scheme"}
+MORE_COMMANDS = {"more", "give me more", "વધુ", "આગળ"}
 
 YES_WORDS = {"yes", "y", "haan", "ha", "true", "1", "ji"}
 NO_WORDS = {"no", "n", "nahi", "nahin", "na", "false", "0"}
@@ -417,7 +430,7 @@ def _fallback_language_from_text(text: str) -> str | None:
 def _menu(language: str | None) -> str:
     lang = _pick_lang(language)
     # Static cache first
-    cached = _get_static(lang, "menu")
+    cached = get_ui_text(lang, "menu", "")
     if cached:
         return cached
     if lang == "en":
@@ -461,10 +474,12 @@ def finalize_response(payload: dict, language: str | None) -> dict:
         body = LABELS["help"]
     ascii_ratio = _ascii_ratio(body)
     translation_applied = False
+    translation_failed = False
 
     if lang != "en":
-        translated = translate_from_english(body, lang)
+        translated, translation_meta = translate_from_english_with_meta(body, lang)
         translated = translated.strip() if translated else ""
+        translation_failed = bool((translation_meta or {}).get("translation_failed"))
         if translated:
             body = translated
             translation_applied = True
@@ -498,6 +513,10 @@ def finalize_response(payload: dict, language: str | None) -> dict:
     safe_payload["errors"] = safe_payload.get("errors") if isinstance(safe_payload.get("errors"), list) else []
     intent_label = str(safe_payload.get("intent") or "HELP").strip().upper()
     safe_payload["intent"] = intent_label if intent_label in PUBLIC_INTENTS else "HELP"
+    if translation_failed:
+        internal_meta = dict(safe_payload.get("internal_metadata") or {})
+        internal_meta["translation_failed"] = True
+        safe_payload["internal_metadata"] = internal_meta
 
     logger.info(
         {
@@ -506,6 +525,7 @@ def finalize_response(payload: dict, language: str | None) -> dict:
             "original_response": original_response[:200],
             "ascii_ratio": round(ascii_ratio, 3),
             "translation_applied": translation_applied,
+            "translation_failed": translation_failed,
         }
     )
     return safe_payload
@@ -1063,11 +1083,17 @@ def _enough_for_results(profile: dict[str, Any]) -> bool:
 
 
 def _norm_state(value: Any) -> str:
-    return str(value or "").strip().lower()
+    text = normalize_text_light(str(value or "")).strip().lower()
+    if not text:
+        return ""
+    if text in {"all india", "national", "central", "india", "nationwide", "pan india"}:
+        return "all india"
+    normalized = normalize_state_name(text)
+    return normalized or text
 
 
 def _is_all_india(state: Any) -> bool:
-    return _norm_state(state) in {"all india", "national", "central", "india"}
+    return _norm_state(state) == "all india"
 
 
 def _state_allowed(user_state: str | None, scheme_state: str | None) -> bool:
@@ -1076,6 +1102,36 @@ def _state_allowed(user_state: str | None, scheme_state: str | None) -> bool:
     if not scheme_state:
         return False
     return _norm_state(scheme_state) == _norm_state(user_state) or _is_all_india(scheme_state)
+
+
+def _final_geo_filter(
+    schemes: list[dict[str, Any]],
+    user_state: str | None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Final non-bypassable geo gate before API payload is returned."""
+    user_state_norm = _norm_state(user_state)
+    if not user_state_norm:
+        return list(schemes or []), 0
+
+    allowed: list[dict[str, Any]] = []
+    rejected = 0
+    for scheme in schemes or []:
+        scheme_state_raw = str(scheme.get("state") or "").strip()
+        scheme_state_norm = _norm_state(scheme_state_raw)
+        if scheme_state_norm == user_state_norm or _is_all_india(scheme_state_norm):
+            allowed.append(scheme)
+            continue
+        rejected += 1
+        logger.warning(
+            {
+                "event": "geo_rejected",
+                "scheme_name": str(scheme.get("scheme_name") or "Unknown Scheme"),
+                "scheme_state": scheme_state_raw or None,
+                "user_state": str(user_state or "") or None,
+                "reason": "geo_rejected: scheme_state != user_state and not_all_india",
+            }
+        )
+    return allowed, rejected
 
 
 def _build_retrieval_query(last_message_english: str | None, profile: dict[str, Any]) -> str:
@@ -1115,9 +1171,18 @@ def _build_concrete_reasons(
     scheme_category: str,
     raw_reasons: list[str] | None,
 ) -> list[str]:
+    state_claim_markers = (
+        "all india",
+        "national",
+        "available at all india",
+        "available in ",
+    )
     output: list[str] = []
     for reason in raw_reasons or []:
         text = str(reason or "").strip()
+        if text and any(marker in normalize_text_light(text) for marker in state_claim_markers):
+            # Recompute geo reasons from actual scheme.state/profile.state to avoid false labels.
+            continue
         if text and not _is_generic_reason(text):
             output.append(text)
 
@@ -1131,7 +1196,7 @@ def _build_concrete_reasons(
         if _norm_state(profile_state) == _norm_state(scheme_state):
             output.append(f"This scheme is available in {profile_state}.")
         elif _is_all_india(scheme_state):
-            output.append("This scheme is available at All India level.")
+            output.append("This is a national/All India scheme.")
 
     income = profile.get("annual_income") if profile.get("annual_income") is not None else profile.get("income")
     if income is not None:
@@ -1246,6 +1311,15 @@ def _is_apply_request(message: str) -> bool:
     return bool(re.match(r"^(apply|select|choose)\s+\d+$", text))
 
 
+def _is_more_request(message: str) -> bool:
+    text = normalize_text_light(message)
+    if not text:
+        return False
+    if text in MORE_COMMANDS:
+        return True
+    return text.startswith("more ") or text.startswith("give me more")
+
+
 def _resolve_selected_scheme(message: str, user: dict[str, Any], scheme_name_hint: str | None = None) -> dict[str, Any] | None:
     text = normalize_text_light(message)
     last_schemes = user.get("last_schemes") if isinstance(user.get("last_schemes"), list) else []
@@ -1270,7 +1344,11 @@ def _resolve_selected_scheme(message: str, user: dict[str, Any], scheme_name_hin
 
     return dict(selected) if selected else None
 
-def _normalize_scheme_cards(schemes: list[dict[str, Any]], profile: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def _normalize_scheme_cards(
+    schemes: list[dict[str, Any]],
+    profile: dict[str, Any] | None = None,
+    max_cards: int | None = 5,
+) -> list[dict[str, Any]]:
     current_profile = dict(profile or {})
 
     # ── STRICT CATEGORY PRE-FILTER ─────────────────────────────────────────
@@ -1309,7 +1387,8 @@ def _normalize_scheme_cards(schemes: list[dict[str, Any]], profile: dict[str, An
         filtered_schemes = list(schemes or [])
 
     cards: list[dict[str, Any]] = []
-    for scheme in filtered_schemes[:5]:
+    candidate_schemes = filtered_schemes if max_cards is None else filtered_schemes[:max_cards]
+    for scheme in candidate_schemes:
         # Quality gate: skip garbage entries
         name = str(scheme.get("scheme_name") or "").strip()
         if not name or name.lower() in {"unnamed scheme", "unknown scheme"}:
@@ -1382,6 +1461,8 @@ def _normalize_scheme_cards(schemes: list[dict[str, Any]], profile: dict[str, An
                 ),
                 "eligibility": scheme.get("eligibility") or dataset_row.get("eligibility"),
                 "eligibility_text": eligibility_text,
+                "eligible": scheme.get("eligible"),
+                "score": float(scheme.get("score") or 0.0),
                 "benefits_summary": summarize_benefit(
                     benefits_raw,
                     max_chars=300,
@@ -1419,6 +1500,16 @@ def _normalize_scheme_cards(schemes: list[dict[str, Any]], profile: dict[str, An
             if isinstance(raw_steps, list) and raw_steps:
                 card["application_process"] = [_t(str(step)) for step in raw_steps]
 
+    cards, geo_rejected_count = _final_geo_filter(cards, current_profile.get("state"))
+    if geo_rejected_count:
+        logger.info(
+            {
+                "event": "final_geo_filter_applied",
+                "user_state": str(current_profile.get("state") or "") or None,
+                "geo_rejected_count": geo_rejected_count,
+                "remaining_cards": len(cards),
+            }
+        )
     return cards
 
 def _build_schemes_payload(
@@ -1429,12 +1520,14 @@ def _build_schemes_payload(
     profile: dict[str, Any] | None = None,
     profile_changed: bool = False,
     errors: list[str] | None = None,
+    visible_limit: int = 5,
 ) -> dict[str, Any]:
     lang = _pick_lang(language)
+    response_confidence = extraction_confidence({"profile": profile or {}})
     # Ensure language is in profile so _normalize_scheme_cards can translate
     profile_with_lang = dict(profile or {})
     profile_with_lang["language"] = lang
-    cards = _normalize_scheme_cards(schemes, profile=profile_with_lang)
+    cards = _normalize_scheme_cards(schemes, profile=profile_with_lang, max_cards=visible_limit)
     if not cards:
         no_match = fallback_message or LABELS["no_match"]
         return {"response": no_match, "schemes": [], "fallback_used": fallback_used, "errors": errors or []}
@@ -1454,7 +1547,7 @@ def _build_schemes_payload(
         intro = f"{fb}\n\n{intro}"
 
     if lang == "en" and profile and scheme_ids and not profile_changed and not fallback_used and intro.strip():
-        set_response_cache(profile, scheme_ids, intro, lang)
+        set_response_cache(profile, scheme_ids, intro, lang, confidence=response_confidence)
     return {"response": intro, "schemes": cards, "fallback_used": fallback_used, "errors": errors or []}
 
 
@@ -1526,7 +1619,7 @@ def _handle_command(
             direct_cards = _query_schemes_direct(retrieval_query, profile_for_search, limit=5)
             if direct_cards:
                 cards = _normalize_scheme_cards(direct_cards, profile=profile_for_search)
-                user_model.update_user(phone_number, {"last_schemes": cards, "selected_scheme": None})
+                user_model.update_user(phone_number, {"last_schemes": cards, "last_schemes_cursor": len(cards), "selected_scheme": None})
                 summary = _format_eligibility_response(profile_for_search, cards)
                 return _result(
                     {"response": summary, "schemes": cards, "fallback_used": False, "errors": []},
@@ -1537,7 +1630,7 @@ def _handle_command(
             result = recommend_schemes(profile_for_search, query=retrieval_query, top_k=5)
             cards = _normalize_scheme_cards(result.get("schemes") or [], profile=profile_for_search)
             if cards:
-                user_model.update_user(phone_number, {"last_schemes": cards, "selected_scheme": None})
+                user_model.update_user(phone_number, {"last_schemes": cards, "last_schemes_cursor": len(cards), "selected_scheme": None})
             summary = _format_eligibility_response(profile_for_search, cards)
             if not cards and result.get("fallback_message"):
                 summary = f"{result.get('fallback_message')}\n\n{summary}"
@@ -1680,6 +1773,74 @@ def _handle_apply_scheme(
     )
 
 
+def _handle_more_schemes(
+    phone_number: str,
+    language: str | None,
+    profile: dict[str, Any],
+    user: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    lang = _pick_lang(language)
+    last_schemes = user.get("last_schemes") if isinstance(user.get("last_schemes"), list) else []
+    cursor = int(user.get("last_schemes_cursor") or len(last_schemes))
+
+    if last_schemes and cursor < len(last_schemes):
+        next_batch = list(last_schemes[cursor: cursor + 5])
+        user_model.update_user(phone_number, {"last_schemes_cursor": cursor + len(next_batch), "conv_state": "showing_schemes"})
+        return _result(
+            {"response": _translate_or_fallback("Here are more matching schemes:", lang), "schemes": next_batch, "fallback_used": False},
+            "showing_schemes",
+            lang,
+            intent="SEARCH_SCHEMES",
+        )
+
+    if not _enough_for_results(profile):
+        return _result(
+            {"response": _translate_or_fallback("No more schemes found.", lang), "schemes": [], "fallback_used": False},
+            user.get("conv_state") or "active",
+            lang,
+            intent="SEARCH_SCHEMES",
+        )
+
+    retrieval_query = _build_retrieval_query("", profile)
+    result = recommend_schemes(profile, query=retrieval_query, top_k=15)
+    all_cards = _normalize_scheme_cards(result.get("schemes") or [], profile=profile, max_cards=None)
+    if not all_cards:
+        return _result(
+            {"response": _translate_or_fallback("No more schemes found.", lang), "schemes": [], "fallback_used": bool(result.get("fallback_used")), "errors": result.get("errors") or []},
+            "showing_schemes",
+            lang,
+            intent="SEARCH_SCHEMES",
+        )
+
+    seen_names = {normalize_text_light(str(card.get("scheme_name") or "")) for card in last_schemes}
+    unseen = [card for card in all_cards if normalize_text_light(str(card.get("scheme_name") or "")) not in seen_names]
+    if not unseen:
+        return _result(
+            {"response": _translate_or_fallback("No more schemes found.", lang), "schemes": [], "fallback_used": False},
+            "showing_schemes",
+            lang,
+            intent="SEARCH_SCHEMES",
+        )
+
+    next_batch = unseen[:5]
+    merged_cards = list(last_schemes) + next_batch
+    user_model.update_user(
+        phone_number,
+        {
+            "last_schemes": merged_cards,
+            "last_schemes_cursor": len(merged_cards),
+            "selected_scheme": None,
+            "conv_state": "showing_schemes",
+        },
+    )
+    return _result(
+        {"response": _translate_or_fallback("Here are more matching schemes:", lang), "schemes": next_batch, "fallback_used": bool(result.get("fallback_used")), "errors": result.get("errors") or []},
+        "showing_schemes",
+        lang,
+        intent="SEARCH_SCHEMES",
+    )
+
+
 def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str]:
     text = sanitize_text(message)
     user, _ = user_model.create_or_get_user(phone_number)
@@ -1694,19 +1855,49 @@ def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str
         user_model.update_user(phone_number, {"last_question_field": None, "conv_state": "active"})
     logger.info({"event": "request_start", "phone": phone_number, "language_locked": language, "state": conv_state, "expected_field": expected_field})
 
-    is_collecting_field = bool(conv_state == "collecting_profile" and expected_field)
+    # is_collecting_field: True when bot is actively waiting for a field answer.
+    # Use BOTH explicit expected_field AND conv_state as guards so that even
+    # if last_question_field was not persisted, collecting state still protects
+    # against digit-menu hijacking.
+    is_collecting_field = (
+        (bool(expected_field) or conv_state == "collecting_profile")
+        and conv_state != "awaiting_language"
+    )
     is_expecting_numeric = is_collecting_field and expected_field in EXPECTING_NUMERIC_FIELDS
 
+    # ── PRIORITY 1: Explicit text commands always fire regardless of state ──
+    # Only exact keyword phrases (not digits) trigger global actions here.
     explicit_intent = _detect_explicit_intent(text)
-    if explicit_intent in {"reset", "change_language", "help", "check_eligibility"}:
+    if explicit_intent in {"reset", "change_language", "help"}:
         return _handle_command(explicit_intent, phone_number, language, profile, text)
+    # ── PRIORITY 2: Numeric profile fields keep literal numeric input ──
+    _single_digit = str(text or "").strip()
+    _digit_has_context = is_expecting_numeric
+    if _single_digit in DIGIT_MENU_INTENTS and is_expecting_numeric:
+        logger.info({
+            "event": "contextual_digit_resolved",
+            "digit": _single_digit,
+            "resolved_field": expected_field,
+            "resolved_value": _single_digit,
+        })
 
+    # ── PRIORITY 3: Digit-menu actions ──
     digit_menu_intent = _detect_digit_menu_intent(text)
-    if digit_menu_intent in {"reset", "change_language", "help", "check_eligibility"}:
-        # Menu digits must work consistently whenever shown to the user.
+    if digit_menu_intent in {"reset", "change_language", "help"} and not is_expecting_numeric:
         return _handle_command(digit_menu_intent, phone_number, language, profile, text)
 
+    # ── PRIORITY 4: Invalid digit fallback for removed option 4 / unsupported menu digits ──
+    if _single_digit.isdigit() and not is_expecting_numeric and _single_digit not in DIGIT_MENU_INTENTS:
+        return _result(
+            {"response": LABELS["invalid_menu_digit"], "schemes": [], "fallback_used": False},
+            conv_state or "active",
+            language,
+            intent="HELP",
+        )
+
     has_scheme_context = bool(user.get("selected_scheme")) or bool(user.get("last_schemes"))
+    if _is_more_request(text) and has_scheme_context:
+        return _handle_more_schemes(phone_number, language, profile, user)
     if _is_apply_request(text) and has_scheme_context:
         return _handle_apply_scheme(phone_number, language, profile, text, user)
 
@@ -1792,7 +1983,20 @@ def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str
     if bootstrap_extraction:
         llm_intent, extracted_profile, llm_data, english_text = bootstrap_extraction
     else:
-        fast_extract = _fast_extract_expected_field(expected_field, text)
+        # If expected_field is None but we are in collecting_profile state, derive
+        # the effective field from _fallback_next_field so contextual digit inputs
+        # (e.g., category shortcut 1-7) resolve correctly even when last_question_field
+        # was not explicitly persisted to the DB.
+        _effective_field = expected_field
+        if not _effective_field and conv_state == "collecting_profile":
+            _effective_field = _fallback_next_field(profile)
+            if _effective_field:
+                logger.info({
+                    "event": "effective_field_inferred",
+                    "inferred_field": _effective_field,
+                    "conv_state": conv_state,
+                })
+        fast_extract = _fast_extract_expected_field(_effective_field, text)
         if fast_extract:
             english_text = str(text or "")
             llm_intent = "profile_update"
@@ -1906,7 +2110,7 @@ def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str
                     errors=[],
                 )
                 if payload.get("schemes"):
-                    user_model.update_user(phone_number, {"last_schemes": payload.get("schemes"), "selected_scheme": None})
+                    user_model.update_user(phone_number, {"last_schemes": payload.get("schemes"), "last_schemes_cursor": len(payload.get("schemes") or []), "selected_scheme": None})
                 user_model.update_user(phone_number, {"last_question_field": None, "conv_state": "active"})
                 return _result(
                     payload,
@@ -1915,19 +2119,19 @@ def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str
                     intent="SEARCH_SCHEMES",
                 )
             result = recommend_schemes(merged_profile, query=retrieval_query, top_k=3)
-            if result.get("schemes"):
-                payload = _build_schemes_payload(
-                    result["schemes"],
-                    language,
-                    fallback_used=bool(result.get("fallback_used")),
-                    fallback_message=result.get("fallback_message"),
-                    profile=merged_profile,
-                    profile_changed=bool(changed_fields),
-                )
-                if payload.get("schemes"):
-                    user_model.update_user(phone_number, {"last_schemes": payload.get("schemes"), "selected_scheme": None})
-                user_model.update_user(phone_number, {"last_question_field": None, "conv_state": "active"})
-                return _result(payload, "active", language, intent="SEARCH_SCHEMES")
+            payload = _build_schemes_payload(
+                result.get("schemes") or [],
+                language,
+                fallback_used=bool(result.get("fallback_used")),
+                fallback_message=result.get("fallback_message"),
+                profile=merged_profile,
+                profile_changed=bool(changed_fields),
+                errors=result.get("errors") or [],
+            )
+            if payload.get("schemes"):
+                user_model.update_user(phone_number, {"last_schemes": payload.get("schemes"), "last_schemes_cursor": len(payload.get("schemes") or []), "selected_scheme": None})
+            user_model.update_user(phone_number, {"last_question_field": None, "conv_state": "active"})
+            return _result(payload, "active", language, intent="SEARCH_SCHEMES")
         if next_field:
             user_model.update_user(phone_number, {"last_question_field": next_field, "conv_state": "collecting_profile"})
             question = _render_followup_question(next_field, language, next_question_english)
@@ -1957,7 +2161,7 @@ def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str
                 errors=[],
             )
             if payload.get("schemes"):
-                user_model.update_user(phone_number, {"last_schemes": payload.get("schemes"), "selected_scheme": None})
+                user_model.update_user(phone_number, {"last_schemes": payload.get("schemes"), "last_schemes_cursor": len(payload.get("schemes") or []), "selected_scheme": None})
             user_model.update_user(phone_number, {"last_question_field": None, "conv_state": "showing_schemes"})
             return _result(
                 payload,
@@ -1976,7 +2180,7 @@ def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str
             errors=result.get("errors") or [],
         )
         if payload.get("schemes"):
-            user_model.update_user(phone_number, {"last_schemes": payload.get("schemes"), "selected_scheme": None})
+            user_model.update_user(phone_number, {"last_schemes": payload.get("schemes"), "last_schemes_cursor": len(payload.get("schemes") or []), "selected_scheme": None})
         user_model.update_user(phone_number, {"last_question_field": None, "conv_state": "showing_schemes"})
         return _result(
             payload,
@@ -2005,7 +2209,7 @@ def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str
                 errors=[],
             )
             if payload.get("schemes"):
-                user_model.update_user(phone_number, {"last_schemes": payload.get("schemes"), "selected_scheme": None})
+                user_model.update_user(phone_number, {"last_schemes": payload.get("schemes"), "last_schemes_cursor": len(payload.get("schemes") or []), "selected_scheme": None})
             user_model.update_user(phone_number, {"last_question_field": None, "conv_state": "showing_schemes"})
             return _result(
                 payload,
@@ -2024,7 +2228,7 @@ def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str
             errors=result.get("errors") or [],
         )
         if payload.get("schemes"):
-            user_model.update_user(phone_number, {"last_schemes": payload.get("schemes"), "selected_scheme": None})
+            user_model.update_user(phone_number, {"last_schemes": payload.get("schemes"), "last_schemes_cursor": len(payload.get("schemes") or []), "selected_scheme": None})
         user_model.update_user(phone_number, {"last_question_field": None, "conv_state": "showing_schemes"})
         return _result(
             payload,
@@ -2040,6 +2244,7 @@ def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str
         return _result({"response": question, "schemes": [], "fallback_used": False}, "collecting_profile", language, intent="SEARCH_SCHEMES")
 
     return _result({"response": LABELS["help"], "schemes": [], "fallback_used": False}, "active", language, intent="HELP")
+
 
 
 
