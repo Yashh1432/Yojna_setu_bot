@@ -129,6 +129,15 @@ def _resolve_lang(code: str) -> str:
     return LANG_MAP.get(str(code or "en").strip().lower(), "en")
 
 
+def _transcribe_once(model, audio_path: str, language: str | None):
+    return model.transcribe(
+        audio_path,
+        language=language,
+        beam_size=5,
+        vad_filter=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API  (signatures UNCHANGED)
 # ---------------------------------------------------------------------------
@@ -166,26 +175,38 @@ def speech_to_text(audio_path: str, language_hint: str = "en") -> str:
 
     try:
         lang = _resolve_lang(language_hint)
-        segments, info = model.transcribe(
-            audio_path,
-            language=lang,
-            beam_size=5,
-            vad_filter=True,
-        )
+        segments, info = _transcribe_once(model, audio_path, lang)
         text = " ".join(
             seg.text.strip() for seg in segments
             if getattr(seg, "text", "").strip()
         )
         result = text.strip()
+        confidence = float(getattr(info, "language_probability", 0.0) or 0.0)
+
+        if (not result or len(result) < 3 or confidence < 0.55):
+            logger.warning(
+                f"STT low-confidence pass | hinted_lang={lang} | detected={getattr(info, 'language', None)} "
+                f"| confidence={confidence:.2f} | retry=auto"
+            )
+            auto_segments, auto_info = _transcribe_once(model, audio_path, None)
+            auto_text = " ".join(
+                seg.text.strip() for seg in auto_segments
+                if getattr(seg, "text", "").strip()
+            ).strip()
+            auto_confidence = float(getattr(auto_info, "language_probability", 0.0) or 0.0)
+            if auto_text and (len(auto_text) > len(result) or auto_confidence >= confidence):
+                result = auto_text
+                info = auto_info
+                confidence = auto_confidence
 
         if result:
             logger.info(
-                f"STT success | lang={info.language} | confidence={info.language_probability:.2f} "
+                f"STT success | lang={getattr(info, 'language', None)} | confidence={confidence:.2f} "
                 f"| text_length={len(result)} | preview={result[:60]!r}"
             )
         else:
             logger.warning(
-                f"STT returned empty text | lang={info.language} "
+                f"STT returned empty text | lang={getattr(info, 'language', None)} "
                 f"| confidence={info.language_probability:.2f} — audio may be silent or unclear."
             )
         return result

@@ -52,6 +52,152 @@ def _normalize_gender(value: Any) -> str | None:
     return lowered or None
 
 
+def _normalize_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    lowered = str(value).strip().lower()
+    if lowered in {"true", "yes", "y", "1"}:
+        return True
+    if lowered in {"false", "no", "n", "0"}:
+        return False
+    return None
+
+
+def _occupation_matches(user_occupation: Any, required_occupation: Any) -> tuple[bool | None, str]:
+    required = str(required_occupation or "").strip().lower()
+    if not required:
+        return None, ""
+    user_value = str(user_occupation or "").strip().lower()
+    if not user_value:
+        return False, "occupation"
+    required_tokens = [token.strip() for token in required.replace("/", ",").split(",") if token.strip()]
+    if not required_tokens:
+        required_tokens = [required]
+    if any(token in user_value for token in required_tokens):
+        return True, ""
+    return False, required_tokens[0]
+
+
+def evaluate_scheme_eligibility_for_profile(raw_profile: dict[str, Any], scheme: dict[str, Any]) -> dict[str, Any]:
+    profile = _profile_view(raw_profile or {})
+    rules = scheme.get("eligibility") or {}
+
+    user_age = profile.get("age")
+    user_income = _income(profile)
+    user_gender = _normalize_gender(profile.get("gender"))
+    user_bpl = _normalize_bool(profile.get("bpl_status"))
+    user_disability = _normalize_bool(profile.get("disability_status"))
+    user_caste = str(profile.get("caste_category") or "").strip().lower()
+    user_occupation = profile.get("occupation")
+    user_percentage = profile.get("academic_percentage")
+
+    missing_fields: list[str] = []
+    rejected_reasons: list[str] = []
+    rejection_code: str | None = None
+
+    min_age = rules.get("min_age")
+    max_age = rules.get("max_age")
+    max_income = rules.get("max_income")
+    scheme_gender = _normalize_gender(rules.get("gender") or scheme.get("gender"))
+    bpl_required = rules.get("bpl_required") if rules.get("bpl_required") is not None else scheme.get("bpl_required")
+    disability_required = rules.get("disability_required") if rules.get("disability_required") is not None else scheme.get("disability_required")
+    occupation_required = rules.get("occupation") or scheme.get("occupation")
+    caste_required = str(rules.get("caste") or scheme.get("caste") or "").strip().lower()
+    min_percentage = rules.get("min_percentage") if rules.get("min_percentage") is not None else rules.get("academic_percentage")
+
+    if max_income is not None:
+        if user_income is None:
+            missing_fields.append("annual_income")
+        elif user_income > max_income:
+            rejected_reasons.append(f"Income exceeds limit of Rs. {int(max_income):,}.")
+            rejection_code = rejection_code or "income_exceeded"
+
+    if min_age is not None or max_age is not None:
+        if user_age is None:
+            missing_fields.append("age")
+        else:
+            if min_age is not None and user_age < min_age:
+                rejected_reasons.append(f"Minimum age is {min_age}.")
+                rejection_code = rejection_code or "age_mismatch"
+            if max_age is not None and user_age > max_age:
+                rejected_reasons.append(f"Maximum age is {max_age}.")
+                rejection_code = rejection_code or "age_mismatch"
+
+    if scheme_gender and scheme_gender not in {"all", "any"}:
+        if not user_gender:
+            missing_fields.append("gender")
+        elif user_gender != scheme_gender:
+            rejected_reasons.append(f"Only for {scheme_gender} applicants.")
+            rejection_code = rejection_code or "gender_mismatch"
+
+    if _normalize_bool(bpl_required) is True:
+        if user_bpl is None:
+            missing_fields.append("bpl_status")
+        elif user_bpl is False:
+            rejected_reasons.append("Requires BPL status.")
+            rejection_code = rejection_code or "bpl_mismatch"
+
+    if _normalize_bool(disability_required) is True:
+        if user_disability is None:
+            missing_fields.append("disability_status")
+        elif user_disability is False:
+            rejected_reasons.append("Requires disability status.")
+            rejection_code = rejection_code or "disability_mismatch"
+
+    occ_match, occ_info = _occupation_matches(user_occupation, occupation_required)
+    if occ_match is False:
+        if occ_info == "occupation":
+            missing_fields.append("occupation")
+        else:
+            rejected_reasons.append(f"Requires occupation: {occ_info}.")
+            rejection_code = rejection_code or "occupation_mismatch"
+
+    if caste_required:
+        if not user_caste:
+            missing_fields.append("caste_category")
+        elif caste_required not in user_caste:
+            rejected_reasons.append(f"Requires caste category: {caste_required}.")
+            rejection_code = rejection_code or "caste_mismatch"
+
+    if min_percentage is not None:
+        if user_percentage is None:
+            missing_fields.append("academic_percentage")
+        else:
+            try:
+                if float(user_percentage) < float(min_percentage):
+                    rejected_reasons.append(f"Minimum academic percentage is {min_percentage}.")
+                    rejection_code = rejection_code or "academic_percentage_mismatch"
+            except Exception:
+                missing_fields.append("academic_percentage")
+
+    if rejected_reasons:
+        return {
+            "status": "ineligible",
+            "reasons": rejected_reasons,
+            "missing_fields": [],
+            "rejection_code": rejection_code or "eligibility_mismatch",
+        }
+
+    if missing_fields:
+        unique_missing = list(dict.fromkeys(missing_fields))
+        reasons = [f"Need {field.replace('_', ' ')} to confirm eligibility." for field in unique_missing]
+        return {
+            "status": "uncertain",
+            "reasons": reasons,
+            "missing_fields": unique_missing,
+            "rejection_code": "missing_required_field",
+        }
+
+    return {
+        "status": "eligible",
+        "reasons": [],
+        "missing_fields": [],
+        "rejection_code": None,
+    }
+
+
 def _scheme_payload(
     scheme: dict[str, Any],
     reasons: list[str],
@@ -89,10 +235,6 @@ def filter_schemes(
         return {"eligible": [], "uncertain_needs_more_data": [], "ineligible": [], "errors": ["No schemes provided."]}
 
     profile = _profile_view(raw_profile or {})
-    user_age = profile.get("age")
-    user_income = _income(profile)
-    user_gender = _normalize_gender(profile.get("gender"))
-    user_bpl = profile.get("bpl_status")
 
     eligible_schemes: list[dict[str, Any]] = []
     uncertain_schemes: list[dict[str, Any]] = []
@@ -101,51 +243,18 @@ def filter_schemes(
     logger.info({"event": "eligibility_filter_start", "category": category, "scheme_count": len(schemes)})
 
     for scheme in schemes:
-        rules = scheme.get("eligibility") or {}
-        missing_fields: list[str] = []
-        rejected_reasons: list[str] = []
-
-        min_age = rules.get("min_age")
-        max_age = rules.get("max_age")
-        max_income = rules.get("max_income")
-        scheme_gender = _normalize_gender(rules.get("gender") or scheme.get("gender"))
-        bpl_required = rules.get("bpl_required") if rules.get("bpl_required") is not None else scheme.get("bpl_required")
-
-        if max_income is not None:
-            if user_income is None:
-                missing_fields.append("annual_income")
-            elif user_income > max_income:
-                rejected_reasons.append(f"Income exceeds limit of Rs. {int(max_income):,}.")
-
-        if min_age is not None or max_age is not None:
-            if user_age is None:
-                missing_fields.append("age")
-            else:
-                if min_age is not None and user_age < min_age:
-                    rejected_reasons.append(f"Minimum age is {min_age}.")
-                if max_age is not None and user_age > max_age:
-                    rejected_reasons.append(f"Maximum age is {max_age}.")
-
-        if scheme_gender and scheme_gender not in {"all", "any"}:
-            if not user_gender:
-                missing_fields.append("gender")
-            elif user_gender != scheme_gender:
-                rejected_reasons.append(f"Only for {scheme_gender} applicants.")
-
-        if bpl_required is True:
-            if user_bpl is None:
-                missing_fields.append("bpl_status")
-            elif user_bpl is False:
-                rejected_reasons.append("Requires BPL status.")
+        eval_result = evaluate_scheme_eligibility_for_profile(profile, scheme)
+        missing_fields: list[str] = list(eval_result.get("missing_fields") or [])
+        rejected_reasons: list[str] = list(eval_result.get("reasons") or []) if eval_result.get("status") == "ineligible" else []
 
         score = final_confidence({"profile": profile}, schemes, scheme)
-        if rejected_reasons:
+        if eval_result.get("status") == "ineligible":
             ineligible_schemes.append(_scheme_payload(scheme, rejected_reasons, False, score))
             continue
 
-        if missing_fields:
-            reasons = [f"Need {field.replace('_', ' ')} to confirm eligibility." for field in dict.fromkeys(missing_fields)]
-            uncertain_schemes.append(_scheme_payload(scheme, reasons, False, score, list(dict.fromkeys(missing_fields))))
+        if eval_result.get("status") == "uncertain":
+            reasons = list(eval_result.get("reasons") or [])
+            uncertain_schemes.append(_scheme_payload(scheme, reasons, False, score, missing_fields))
             continue
 
         eligible_reasons = scheme.get("why_match") or ["Matches your profile criteria"]
@@ -169,8 +278,8 @@ def filter_schemes(
     )
 
     return {
-        "eligible": eligible_schemes[:5],
-        "uncertain_needs_more_data": uncertain_schemes[:5],
-        "ineligible": ineligible_schemes[:5],
+        "eligible": eligible_schemes[:10],
+        "uncertain_needs_more_data": uncertain_schemes[:10],
+        "ineligible": ineligible_schemes[:10],
         "errors": [],
     }

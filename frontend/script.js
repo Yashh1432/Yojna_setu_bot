@@ -98,7 +98,24 @@ function appendBotMessage(data) {
 
     // --- SCHEME CARDS: rendered OUTSIDE the chat bubble ---
     if (data.schemes && data.schemes.length > 0) {
-        data.schemes.forEach((s, idx) => {
+        const isNationalState = (state) => {
+            const v = String(state || "").trim().toLowerCase();
+            return v === "all india" || v === "india" || v === "national" || v === "central";
+        };
+        const stateSchemes = [];
+        const nationalSchemes = [];
+        data.schemes.forEach((s) => {
+            if (s && s.match_scope === "national") {
+                nationalSchemes.push(s);
+            } else if (s && s.match_scope === "state") {
+                stateSchemes.push(s);
+            } else if (isNationalState(s && s.state)) {
+                nationalSchemes.push(s);
+            } else {
+                stateSchemes.push(s);
+            }
+        });
+        const renderSchemeCard = (s, idx) => {
             const ts       = Date.now();
             const detailId = `sd-${ts}-${idx}`;
             const cardId   = `sc-${ts}-${idx}`;
@@ -151,7 +168,16 @@ function appendBotMessage(data) {
                     </div>
                 </div>
             </div>`;
-        });
+        };
+
+        // if (stateSchemes.length > 0) {
+        //     innerHtml += `<div class="scheme-group"><h5 class="scheme-group-title">State-level Schemes</h5></div>`;
+        //     stateSchemes.forEach((s, idx) => renderSchemeCard(s, idx));
+        // }
+        // if (nationalSchemes.length > 0) {
+        //     innerHtml += `<div class="scheme-group"><h5 class="scheme-group-title">National-level Schemes</h5></div>`;
+        //     nationalSchemes.forEach((s, idx) => renderSchemeCard(s, stateSchemes.length + idx));
+        // }
     }
     
     if (data.audio_url) {

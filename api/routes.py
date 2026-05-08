@@ -8,6 +8,12 @@ from core.cleanup import cleanup_old_files
 from core.limiter import limiter
 from core.logger import get_logger, set_trace_id
 from core.sanitizer import sanitize_text
+from engine.validator import (
+    is_scheme_allowed_for_user,
+    is_true_national_scheme,
+    is_user_state_scheme,
+    normalize_state_for_geo,
+)
 from engine.state_manager import MENU_TEXT, MENU_TEXTS, handle_message
 from models.db_client import db_client
 from models.feedback_model import feedback_model
@@ -28,6 +34,40 @@ SAFE_EMPTY_RESPONSE_FALLBACK = {
     "ta": "I could not complete the search safely. Please try again or provide more details.",
     "ur": "I could not complete the search safely. Please try again or provide more details.",
 }
+
+def _final_geo_filter_schemes(schemes: list, user_state: str | None):
+    user_state_norm = normalize_state_for_geo(user_state)
+    if not user_state_norm:
+        return list(schemes or []), []
+
+    filtered = []
+    rejected = []
+    for item in schemes or []:
+        scheme = dict(item or {})
+        scheme_name = str(scheme.get("scheme_name") or "Unknown Scheme")
+        scheme_state_raw = str(scheme.get("state") or "").strip()
+        scheme_state_norm = normalize_state_for_geo(scheme_state_raw)
+        geo_allowed = bool(scheme_state_norm and is_scheme_allowed_for_user(scheme, user_state_norm))
+
+        if not geo_allowed:
+            rejected.append(
+                {
+                    "scheme_name": scheme_name,
+                    "scheme_state": scheme_state_raw or None,
+                    "user_state": user_state,
+                    "reason": "geo_rejected: scheme_state != user_state and not_all_india",
+                }
+            )
+            continue
+
+        if is_user_state_scheme(scheme, user_state_norm):
+            scheme["why_match"] = [f"This scheme is available in {str(user_state or '').strip() or scheme_state_raw}."]
+        elif is_true_national_scheme(scheme):
+            scheme["why_match"] = ["This is a national/All India scheme."]
+
+        filtered.append(scheme)
+
+    return filtered, rejected
 
 
 @api_bp.route('/chat', methods=['POST'])
@@ -52,6 +92,8 @@ def chat():
         input_type = request.form.get('input_type', 'text')
         message = request.form.get('message', '')
 
+    input_type = str(input_type or "text").strip().lower()
+
     if not phone_number:
         phone_number = "anonymous_user"
         logger.info({"event": "anonymous_user", "trace_id": trace_id})
@@ -65,6 +107,7 @@ def chat():
     })
 
     user_lang_hint = "en"
+    voice_audio_received = False
     if input_type == "voice":
         # ------------------------------------------------------------------
         # Guard: VOICE_ENABLED=false — return clear message, text chat unaffected
@@ -92,6 +135,7 @@ def chat():
 
         audio_file = request.files.get('audio')
         if audio_file:
+            voice_audio_received = True
             original_name = audio_file.filename or ""
             extension = os.path.splitext(original_name)[1].lower()
             allowed_exts = {".wav", ".webm", ".mp3", ".m4a", ".ogg", ".mp4", ".mpeg"}
@@ -139,7 +183,7 @@ def chat():
                     error_prompt = translated_prompt
             error_response = f"{error_prompt}\n\n{error_menu}"
             # TTS is best-effort — if it fails, text response is still returned
-            error_audio = text_to_speech(error_response, language_code=user_lang_hint)
+            error_audio = text_to_speech(error_response, language_code=user_lang_hint) if voice_audio_received else ""
 
             return jsonify({
                 "response": error_response,
@@ -169,6 +213,7 @@ def chat():
         "schemes": [],
         "errors": [],
         "fallback_used": False,
+        "audio_url": "",
         "trace_id": trace_id,
     }
 
@@ -176,6 +221,34 @@ def chat():
         out.update(response_msg)
     else:
         out["response"] = response_msg
+
+    user_state_for_geo = None
+    try:
+        latest_user = user_model.get_user(phone_number) or {}
+        profile = latest_user.get("profile") if isinstance(latest_user.get("profile"), dict) else {}
+        user_state_for_geo = profile.get("state")
+    except Exception:
+        user_state_for_geo = None
+
+    rejected_schemes = []
+    if isinstance(out.get("schemes"), list):
+        filtered_schemes, rejected_schemes = _final_geo_filter_schemes(out.get("schemes") or [], user_state_for_geo)
+        out["schemes"] = filtered_schemes
+        if rejected_schemes:
+            logger.warning(
+                {
+                    "event": "final_geo_filter",
+                    "trace_id": trace_id,
+                    "user_state": user_state_for_geo,
+                    "rejected_count": len(rejected_schemes),
+                    "rejected_schemes": rejected_schemes,
+                }
+            )
+    if user_state_for_geo and isinstance(out.get("schemes"), list) and not out.get("schemes") and rejected_schemes:
+        out["response"] = (
+            f"No matching schemes found for {user_state_for_geo}. "
+            "Showing All India schemes if available."
+        )
 
     response_text = out.get("response") or out.get("message") or ""
     if not response_text or not str(response_text).strip():
@@ -200,7 +273,7 @@ def chat():
     if not isinstance(out.get("schemes"), list):
         out["schemes"] = []
 
-    if input_type == "voice" and _VOICE_ENABLED:
+    if input_type == "voice" and _VOICE_ENABLED and voice_audio_received:
         user_lang = user_lang_hint
         try:
             user_doc, _ = user_model.create_or_get_user(phone_number)
@@ -211,6 +284,8 @@ def chat():
         # TTS is best-effort — text response is already set in out["response"]
         audio_url = text_to_speech(response_text, language_code=user_lang)
         out["audio_url"] = audio_url or ""  # empty string, never None
+    elif input_type != "voice":
+        out.pop("audio_url", None)
 
     try:
         messages_model.log_message(

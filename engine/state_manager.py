@@ -14,9 +14,19 @@ from engine.engine import (
     infer_language_selection_llm,
     normalize_text_light,
 )
-from engine.eligibility import filter_schemes
+from engine.eligibility import evaluate_scheme_eligibility_for_profile, filter_schemes
 from engine.orchestrator import load_scheme_dataset, recommend_schemes, summarize_benefit
-from engine.validator import normalize_income_value, normalize_state_name
+from engine.validator import (
+    NATIONAL_STATE_TOKENS,
+    category_matches_user_intent,
+    is_scheme_allowed_for_user,
+    is_true_national_scheme,
+    is_user_state_scheme,
+    normalize_category_for_match,
+    normalize_income_value,
+    normalize_state_for_geo,
+    normalize_state_name,
+)
 from models.users import user_model
 from services.cache_service import (
     get_extraction_cache,
@@ -69,6 +79,14 @@ STATIC_TRANSLATIONS: dict[str, dict[str, str]] = {
         "annual_income": "\u0906\u092a\u0915\u0940 \u0935\u093e\u0930\u094d\u0937\u093f\u0915 \u092a\u093e\u0930\u093f\u0935\u093e\u0930\u093f\u0915 \u0906\u092f \u0915\u093f\u0924\u0928\u0940 \u0939\u0948?",
         "menu": "1 \u0930\u0940\u0938\u0947\u091f\n2 \u092d\u093e\u0937\u093e \u092c\u0926\u0932\u0947\u0902\n3 \u0938\u0939\u093e\u092f\u0924\u093e",
         "help": "\u0905\u092a\u0928\u0940 \u091c\u093e\u0928\u0915\u093e\u0930\u0940 \u0938\u094d\u0935\u093e\u092d\u093e\u0935\u093f\u0915 \u0930\u0942\u092a \u0938\u0947 \u0938\u093e\u091d\u093e \u0915\u0930\u0947\u0902\u0964",
+        "invalid_number": "\u0915\u0943\u092a\u092f\u093e \u0915\u094b\u0908 \u092e\u093e\u0928\u094d\u092f \u0938\u0902\u0916\u094d\u092f\u093e \u0926\u0930\u094d\u091c \u0915\u0930\u0947\u0902\u0964",
+        "invalid_age_range": "\u0915\u0943\u092a\u092f\u093e \u0909\u092e\u094d\u0930 {min_age} \u0938\u0947 {max_age} \u0915\u0947 \u092c\u0940\u091a \u0926\u0930\u094d\u091c \u0915\u0930\u0947\u0902\u0964",
+        "invalid_income": "\u0915\u0943\u092a\u092f\u093e \u0935\u093e\u0930\u094d\u0937\u093f\u0915 \u0906\u092f \u0930\u0941\u092a\u092f\u094b\u0902 \u092e\u0947\u0902 \u0936\u0942\u0928\u094d\u092f \u0938\u0947 \u0905\u0927\u093f\u0915 \u092e\u093e\u0928\u094d\u092f \u0930\u093e\u0936\u093f \u0915\u0947 \u0930\u0942\u092a \u092e\u0947\u0902 \u0926\u0930\u094d\u091c \u0915\u0930\u0947\u0902\u0964",
+        "invalid_percentage": "\u0915\u0943\u092a\u092f\u093e \u0936\u0948\u0915\u094d\u0937\u0923\u093f\u0915 \u092a\u094d\u0930\u0924\u093f\u0936\u0924 0 \u0938\u0947 100 \u0915\u0947 \u092c\u0940\u091a \u0926\u0930\u094d\u091c \u0915\u0930\u0947\u0902\u0964",
+        "invalid_state": "\u0915\u0943\u092a\u092f\u093e \u0915\u094b\u0908 \u092e\u093e\u0928\u094d\u092f \u092d\u093e\u0930\u0924\u0940\u092f \u0930\u093e\u091c\u094d\u092f \u0915\u093e \u0928\u093e\u092e \u0926\u0930\u094d\u091c \u0915\u0930\u0947\u0902, \u091c\u0948\u0938\u0947 \u0917\u0941\u091c\u0930\u093e\u0924 \u092f\u093e \u0915\u0930\u094d\u0928\u093e\u091f\u0915\u0964",
+        "invalid_gender": "\u0915\u0943\u092a\u092f\u093e \u0932\u093f\u0902\u0917 male, female \u092f\u093e other \u0915\u0947 \u0930\u0942\u092a \u092e\u0947\u0902 \u0926\u0930\u094d\u091c \u0915\u0930\u0947\u0902\u0964",
+        "invalid_bpl": "\u0915\u0943\u092a\u092f\u093e BPL \u0938\u094d\u0925\u093f\u0924\u093f \u0915\u093e \u091c\u0935\u093e\u092c yes \u092f\u093e no \u092e\u0947\u0902 \u0926\u0947\u0902\u0964",
+        "invalid_caste": "\u0915\u0943\u092a\u092f\u093e \u091c\u093e\u0924\u093f \u0936\u094d\u0930\u0947\u0923\u0940 General, OBC, SC, ST \u092f\u093e EWS \u0915\u0947 \u0930\u0942\u092a \u092e\u0947\u0902 \u0926\u0930\u094d\u091c \u0915\u0930\u0947\u0902\u0964",
         "invalid_occupation_numeric": "\u0915\u0943\u092a\u092f\u093e \u0905\u092a\u0928\u093e \u092a\u0947\u0936\u093e \u0936\u092c\u094d\u0926\u094b\u0902 \u092e\u0947\u0902 \u0932\u093f\u0916\u0947\u0902, \u091c\u0948\u0938\u0947 \u0915\u093f\u0938\u093e\u0928, \u091b\u093e\u0924\u094d\u0930 \u092f\u093e \u0921\u094d\u0930\u093e\u0907\u0935\u0930\u0964",
     },
     "ta": {
@@ -91,6 +109,14 @@ STATIC_TRANSLATIONS: dict[str, dict[str, str]] = {
         "annual_income": "\u0aa4\u0aae\u0abe\u0ab0\u0ac0 \u0ab5\u0abe\u0ab0\u0acd\u0ab7\u0abf\u0a95 \u0a86\u0ab5\u0a95 \u0a95\u0ac7\u0a9f\u0ab2\u0ac0 \u0a9b\u0ac7?",
         "menu": "1 \u0ab0\u0ac0\u0ab8\u0ac7\u0a9f\n2 \u0aad\u0abe\u0ab7\u0abe \u0aac\u0aa6\u0ab2\u0acb\n3 \u0aae\u0aa6\u0aa6",
         "help": "\u0aa4\u0aae\u0abe\u0ab0\u0ac0 \u0aae\u0abe\u0ab9\u0abf\u0aa4\u0ac0 \u0ab8\u0acd\u0ab5\u0abe\u0aad\u0abe\u0ab5\u0abf\u0a95 \u0ab0\u0ac0\u0aa4\u0ac7 \u0ab6\u0ac7\u0ab0 \u0a95\u0ab0\u0acb.",
+        "invalid_number": "\u0a95\u0ac3\u0aaa\u0abe \u0a95\u0ab0\u0ac0 \u0aae\u0abe\u0aa8\u0acd\u0aaf \u0ab8\u0a82\u0a96\u0acd\u0aaf\u0abe \u0aa6\u0abe\u0a96\u0ab2 \u0a95\u0ab0\u0acb.",
+        "invalid_age_range": "\u0a95\u0ac3\u0aaa\u0abe \u0a95\u0ab0\u0ac0 \u0a89\u0aae\u0ab0 {min_age} \u0aa5\u0ac0 {max_age} \u0ab5\u0a9a\u0acd\u0a9a\u0ac7 \u0aa6\u0abe\u0a96\u0ab2 \u0a95\u0ab0\u0acb.",
+        "invalid_income": "\u0a95\u0ac3\u0aaa\u0abe \u0a95\u0ab0\u0ac0 \u0ab5\u0abe\u0ab0\u0acd\u0ab7\u0abf\u0a95 \u0a86\u0ab5\u0a95 \u0ab0\u0ac2\u0aaa\u0abf\u0aaf\u0abe\u0aae\u0abe\u0a82 \u0ab6\u0ac2\u0aa8\u0acd\u0aaf \u0aa5\u0ac0 \u0ab5\u0aa7\u0abe\u0ab0\u0ac7 \u0aae\u0abe\u0aa8\u0acd\u0aaf \u0ab0\u0a95\u0aae \u0aa4\u0ab0\u0ac0\u0a95\u0ac7 \u0aa6\u0abe\u0a96\u0ab2 \u0a95\u0ab0\u0acb.",
+        "invalid_percentage": "\u0a95\u0ac3\u0aaa\u0abe \u0a95\u0ab0\u0ac0 \u0ab6\u0ac8\u0a95\u0acd\u0ab7\u0aa3\u0abf\u0a95 \u0a9f\u0a95\u0abe\u0ab5\u0abe\u0ab0\u0ac0 0 \u0aa5\u0ac0 100 \u0ab5\u0a9a\u0acd\u0a9a\u0ac7 \u0aa6\u0abe\u0a96\u0ab2 \u0a95\u0ab0\u0acb.",
+        "invalid_state": "\u0a95\u0ac3\u0aaa\u0abe \u0a95\u0ab0\u0ac0 \u0aae\u0abe\u0aa8\u0acd\u0aaf \u0aad\u0abe\u0ab0\u0aa4\u0ac0\u0aaf \u0ab0\u0abe\u0a9c\u0acd\u0aaf\u0aa8\u0ac1\u0a82 \u0aa8\u0abe\u0aae \u0aa6\u0abe\u0a96\u0ab2 \u0a95\u0ab0\u0acb, \u0a9c\u0ac7\u0ab5\u0ac1\u0a82 \u0a95\u0ac7 \u0a97\u0ac1\u0a9c\u0ab0\u0abe\u0aa4 \u0a85\u0aa5\u0ab5\u0abe \u0a95\u0ab0\u0acd\u0aa8\u0abe\u0a9f\u0a95.",
+        "invalid_gender": "\u0a95\u0ac3\u0aaa\u0abe \u0a95\u0ab0\u0ac0 gender male, female \u0a85\u0aa5\u0ab5\u0abe other \u0aa4\u0ab0\u0ac0\u0a95\u0ac7 \u0aa6\u0abe\u0a96\u0ab2 \u0a95\u0ab0\u0acb.",
+        "invalid_bpl": "\u0a95\u0ac3\u0aaa\u0abe \u0a95\u0ab0\u0ac0 BPL \u0ab8\u0acd\u0aa5\u0abf\u0aa4\u0abf \u0aae\u0abe\u0a9f\u0ac7 yes \u0a85\u0aa5\u0ab5\u0abe no \u0aae\u0abe\u0a82 \u0a9c\u0ab5\u0abe\u0aac \u0a86\u0aaa\u0acb.",
+        "invalid_caste": "\u0a95\u0ac3\u0aaa\u0abe \u0a95\u0ab0\u0ac0 \u0a9c\u0abe\u0aa4\u0abf \u0ab5\u0ab0\u0acd\u0a97 General, OBC, SC, ST \u0a85\u0aa5\u0ab5\u0abe EWS \u0aa4\u0ab0\u0ac0\u0a95\u0ac7 \u0aa6\u0abe\u0a96\u0ab2 \u0a95\u0ab0\u0acb.",
         "invalid_occupation_numeric": "\u0a95\u0ac3\u0aaa\u0abe \u0a95\u0ab0\u0ac0\u0aa8\u0ac7 \u0aa4\u0aae\u0abe\u0ab0\u0acb \u0ab5\u0acd\u0aaf\u0ab5\u0ab8\u0abe\u0aaf \u0ab6\u0aac\u0acd\u0aa6\u0acb\u0aae\u0abe\u0a82 \u0ab2\u0a96\u0acb, \u0a9c\u0ac7\u0ab5\u0abe \u0a95\u0ac7 \u0a96\u0ac7\u0aa1\u0ac2\u0aa4, \u0ab5\u0abf\u0aa6\u0acd\u0aaf\u0abe\u0ab0\u0acd\u0aa5\u0ac0 \u0a85\u0aa5\u0ab5\u0abe \u0aa1\u0acd\u0ab0\u0abe\u0a88\u0ab5\u0ab0.",
     },
     "kn": {
@@ -177,6 +203,14 @@ LABELS = {
     "response_reset": "Your profile is reset. Let us start again.",
     "invalid_menu_digit": "Please choose 1 Reset, 2 Change Language, or 3 Help - or type your scheme need in words.",
     "schemes_found": "Here are the matching schemes for you:",
+    "invalid_number": "Please enter a valid number.",
+    "invalid_age_range": "Please enter age between {min_age} and {max_age}.",
+    "invalid_income": "Please enter annual income as a valid rupee amount greater than zero.",
+    "invalid_percentage": "Please enter academic percentage between 0 and 100.",
+    "invalid_state": "Please enter a valid Indian state name, for example Gujarat or Karnataka.",
+    "invalid_gender": "Please enter gender as male, female, or other.",
+    "invalid_bpl": "Please answer BPL status as yes or no.",
+    "invalid_caste": "Please enter caste category as General, OBC, SC, ST, or EWS.",
 }
 
 # Localized version of schemes_found for all supported languages.
@@ -352,6 +386,10 @@ PROFILE_FIELDS = [
 
 BOOLEAN_FIELDS = {"bpl_status"}
 EXPECTING_NUMERIC_FIELDS = {"age", "income", "annual_income", "academic_percentage"}
+MAX_VALID_AGE = 110
+MIN_VALID_AGE = 1
+MIN_VALID_INCOME = 1
+MAX_VALID_PERCENTAGE = 100.0
 
 # Category-specific slot policy. Occupation is NOT globally required.
 REQUIRED_FIELDS_BY_CATEGORY: dict[str, list[str]] = {
@@ -832,6 +870,65 @@ def _fast_extract_expected_field(expected_field: str | None, message: str) -> di
     return {}
 
 
+def _validate_expected_field_input(expected_field: str | None, message: str, language: str | None) -> str | None:
+    field = str(expected_field or "").strip().lower()
+    text = str(message or "").strip()
+    lowered = text.lower()
+    if not field or not text:
+        return None
+
+    if field in {"age", "annual_income", "income", "academic_percentage"}:
+        # Allow natural language answers (LLM path) when no numeric signal exists.
+        if not _is_number_like(text):
+            return None if not re.search(r"\d", text) else _localized_label("invalid_number", language)
+        parsed = _parse_number_like(text)
+        if parsed is None:
+            return _localized_label("invalid_number", language)
+        if field == "age":
+            age = int(round(parsed))
+            if age < MIN_VALID_AGE or age > MAX_VALID_AGE:
+                return _localized_label(
+                    "invalid_age_range", language, min_age=str(MIN_VALID_AGE), max_age=str(MAX_VALID_AGE)
+                )
+        elif field in {"annual_income", "income"}:
+            income = normalize_income_value(parsed)
+            if income is None or int(income) < MIN_VALID_INCOME:
+                return _localized_label("invalid_income", language)
+        elif field == "academic_percentage":
+            percent = float(parsed)
+            if percent < 0 or percent > MAX_VALID_PERCENTAGE:
+                return _localized_label("invalid_percentage", language)
+        return None
+
+    if field == "state":
+        if _is_number_like(text) or len(text) > 40:
+            return _localized_label("invalid_state", language)
+        if _normalize_state_name(text) is None:
+            return _localized_label("invalid_state", language)
+        return None
+
+    if field == "gender":
+        if lowered not in {"male", "m", "female", "f", "other", "others"}:
+            return _localized_label("invalid_gender", language)
+        return None
+
+    if field == "bpl_status":
+        if lowered not in YES_WORDS and lowered not in NO_WORDS:
+            return _localized_label("invalid_bpl", language)
+        return None
+
+    if field == "caste_category":
+        normalized = normalize_text_light(text)
+        if normalized and normalized not in {"general", "obc", "sc", "st", "ews"}:
+            return _localized_label("invalid_caste", language)
+        return None
+
+    if field == "occupation" and _is_number_like(text):
+        return _localized_label("invalid_occupation_numeric", language)
+
+    return None
+
+
 def _detect_explicit_intent(message: str) -> str:
     lowered = str(message or "").strip().lower()
     if any(phrase == lowered or phrase in lowered for phrase in RESET_COMMANDS):
@@ -1083,34 +1180,33 @@ def _enough_for_results(profile: dict[str, Any]) -> bool:
 
 
 def _norm_state(value: Any) -> str:
-    text = normalize_text_light(str(value or "")).strip().lower()
-    if not text:
-        return ""
-    if text in {"all india", "national", "central", "india", "nationwide", "pan india"}:
-        return "all india"
-    normalized = normalize_state_name(text)
-    return normalized or text
+    return normalize_state_for_geo(value)
 
 
 def _is_all_india(state: Any) -> bool:
-    return _norm_state(state) == "all india"
+    return _norm_state(state) in NATIONAL_STATE_TOKENS
 
 
 def _state_allowed(user_state: str | None, scheme_state: str | None) -> bool:
-    if not user_state:
-        return True
-    if not scheme_state:
-        return False
-    return _norm_state(scheme_state) == _norm_state(user_state) or _is_all_india(scheme_state)
+    return is_scheme_allowed_for_user({"state": scheme_state}, user_state)
 
 
 def _final_geo_filter(
     schemes: list[dict[str, Any]],
     user_state: str | None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Final non-bypassable geo gate before API payload is returned."""
+    """
+    Final non-bypassable geo gate before ANY scheme reaches API output.
+
+    ALLOW only:
+      - scheme.state == user.state  (exact normalized match)
+      - scheme.state is All India / National / Central / India
+
+    Everything else is REJECTED and logged with event="geo_rejected_final".
+    """
     user_state_norm = _norm_state(user_state)
     if not user_state_norm:
+        # No user state provided — cannot filter, pass everything through.
         return list(schemes or []), 0
 
     allowed: list[dict[str, Any]] = []
@@ -1118,17 +1214,18 @@ def _final_geo_filter(
     for scheme in schemes or []:
         scheme_state_raw = str(scheme.get("state") or "").strip()
         scheme_state_norm = _norm_state(scheme_state_raw)
-        if scheme_state_norm == user_state_norm or _is_all_india(scheme_state_norm):
+        if is_scheme_allowed_for_user(scheme, user_state_norm):
             allowed.append(scheme)
             continue
         rejected += 1
         logger.warning(
             {
-                "event": "geo_rejected",
+                "event": "geo_rejected_final",
                 "scheme_name": str(scheme.get("scheme_name") or "Unknown Scheme"),
-                "scheme_state": scheme_state_raw or None,
-                "user_state": str(user_state or "") or None,
-                "reason": "geo_rejected: scheme_state != user_state and not_all_india",
+                "scheme_state_raw": scheme_state_raw or None,
+                "scheme_state_normalized": scheme_state_norm or None,
+                "user_state_normalized": user_state_norm,
+                "reason": "state_mismatch",
             }
         )
     return allowed, rejected
@@ -1370,6 +1467,7 @@ def _normalize_scheme_cards(
 
     user_cat_slug = str(current_profile.get("category") or "").strip().lower().replace(" ", "_")
     allowed_cats = CATEGORY_SLUG_TO_DATASET.get(user_cat_slug)
+    user_category = current_profile.get("category")
 
     def _cat_allowed(scheme: dict) -> bool:
         if not allowed_cats:
@@ -1381,14 +1479,51 @@ def _normalize_scheme_cards(
         ).strip().lower()
         return not raw or raw in allowed_cats  # blank category → pass through
 
-    filtered_schemes = [s for s in (schemes or []) if _cat_allowed(s)]
-    # If strict filter wiped everything, fall back to the full list
-    if not filtered_schemes:
-        filtered_schemes = list(schemes or [])
+    filtered_schemes = [s for s in (schemes or []) if _cat_allowed(s) and category_matches_user_intent(s, user_category)]
+    # Keep strict category gating; do not repopulate with unrelated categories.
+
+    # ── INLINE GEO GUARD ────────────────────────────────────────────────────────
+    # Final safety net: applied inside the card-building loop so wrong-state
+    # schemes are rejected BEFORE a card is built, regardless of whether the
+    # category fallback above reintroduced them.
+    _user_state_norm_card = _norm_state(current_profile.get("state"))
+
+    def _geo_card_allowed(scheme: dict) -> bool:
+        if not _user_state_norm_card:
+            return True  # user has not provided state — no geo restriction
+        s_norm = _norm_state(str(scheme.get("state") or "").strip())
+        return s_norm == _user_state_norm_card or _is_all_india(s_norm)
 
     cards: list[dict[str, Any]] = []
+    rejected_by_reason: dict[str, int] = {}
+
+    def _mark_rejected(scheme: dict[str, Any], reason: str) -> None:
+        rejected_by_reason[reason] = int(rejected_by_reason.get(reason) or 0) + 1
+        logger.warning(
+            {
+                "event": "scheme_rejected_final",
+                "scheme_name": str(scheme.get("scheme_name") or "Unknown Scheme"),
+                "scheme_state": str(scheme.get("state") or "").strip() or None,
+                "scheme_category": str(scheme.get("category") or "").strip() or None,
+                "user_state": str(current_profile.get("state") or "").strip() or None,
+                "user_category": normalize_category_for_match(current_profile.get("category")),
+                "reason": reason,
+            }
+        )
+
     candidate_schemes = filtered_schemes if max_cards is None else filtered_schemes[:max_cards]
     for scheme in candidate_schemes:
+        # ── Inline geo guard ── reject wrong-state schemes before building a card
+        if not _geo_card_allowed(scheme):
+            _mark_rejected(scheme, "geo_mismatch")
+            continue
+        if not category_matches_user_intent(scheme, user_category):
+            _mark_rejected(scheme, "category_mismatch")
+            continue
+        eligibility_check = evaluate_scheme_eligibility_for_profile(current_profile, scheme)
+        if eligibility_check.get("status") == "ineligible":
+            _mark_rejected(scheme, str(eligibility_check.get("rejection_code") or "eligibility_mismatch"))
+            continue
         # Quality gate: skip garbage entries
         name = str(scheme.get("scheme_name") or "").strip()
         if not name or name.lower() in {"unnamed scheme", "unknown scheme"}:
@@ -1454,6 +1589,14 @@ def _normalize_scheme_cards(
                 "scheme_id": scheme.get("scheme_id") or name,
                 "scheme_name": name,
                 "state": scheme_state or "Unknown",
+                "match_scope": str(
+                    scheme.get("match_scope")
+                    or (
+                        "national"
+                        if is_true_national_scheme({"state": scheme_state})
+                        else ("state" if is_user_state_scheme({"state": scheme_state}, current_profile.get("state")) else "state")
+                    )
+                ),
                 "category": scheme_category,
                 "description": _text_or_fallback(
                     scheme.get("description") or dataset_row.get("description") or benefits_raw,
@@ -1461,7 +1604,7 @@ def _normalize_scheme_cards(
                 ),
                 "eligibility": scheme.get("eligibility") or dataset_row.get("eligibility"),
                 "eligibility_text": eligibility_text,
-                "eligible": scheme.get("eligible"),
+                "eligible": True if eligibility_check.get("status") == "eligible" else scheme.get("eligible"),
                 "score": float(scheme.get("score") or 0.0),
                 "benefits_summary": summarize_benefit(
                     benefits_raw,
@@ -1510,6 +1653,17 @@ def _normalize_scheme_cards(
                 "remaining_cards": len(cards),
             }
         )
+    state_count = sum(1 for card in cards if str(card.get("match_scope") or "") == "state")
+    national_count = sum(1 for card in cards if str(card.get("match_scope") or "") == "national")
+    logger.info(
+        {
+            "event": "scheme_bucket_summary",
+            "state_bucket_count": state_count,
+            "national_bucket_count": national_count,
+            "final_count": len(cards),
+            "rejected_by_reason": rejected_by_reason,
+        }
+    )
     return cards
 
 def _build_schemes_payload(
@@ -1520,7 +1674,7 @@ def _build_schemes_payload(
     profile: dict[str, Any] | None = None,
     profile_changed: bool = False,
     errors: list[str] | None = None,
-    visible_limit: int = 5,
+    visible_limit: int = 10,
 ) -> dict[str, Any]:
     lang = _pick_lang(language)
     response_confidence = extraction_confidence({"profile": profile or {}})
@@ -1541,7 +1695,21 @@ def _build_schemes_payload(
 
     # ── Use a clean localized header instead of verbose scheme list text ──
     # Full details are in the expandable cards — bubble only needs a short label
+    state_count = sum(1 for card in cards if str(card.get("match_scope") or "") == "state")
+    national_count = sum(1 for card in cards if str(card.get("match_scope") or "") == "national")
+
     intro = SCHEMES_FOUND_LABEL.get(lang) or SCHEMES_FOUND_LABEL["en"]
+    if lang == "hi":
+        user_state = str((profile_with_lang or {}).get("state") or "").strip()
+        user_category = str((profile_with_lang or {}).get("category") or "").strip().replace("_", " ")
+        if state_count > 0 and national_count > 0:
+            intro = "आपके राज्य और राष्ट्रीय स्तर की मिलती योजनाएँ यहाँ हैं:"
+        elif state_count > 0:
+            intro = f"{user_state or 'आपके राज्य'} के लिए मिलती योजनाएँ यहाँ हैं:"
+        elif national_count > 0:
+            intro = f"{user_state or 'आपके राज्य'} के लिए कोई सटीक योजना नहीं मिली। उपलब्ध राष्ट्रीय योजनाएँ दिखा रहा हूँ:"
+        else:
+            intro = f"{user_state or 'आपके राज्य'} के लिए कोई उपयुक्त {user_category or 'योजना'} योजना नहीं मिली।"
     if fallback_message:
         fb = _translate_or_fallback(fallback_message, lang) if lang != "en" else fallback_message
         intro = f"{fb}\n\n{intro}"
@@ -1616,7 +1784,7 @@ def _handle_command(
     if intent == "check_eligibility":
         if _enough_for_results(profile):
             retrieval_query = _build_retrieval_query(message, profile_for_search)
-            direct_cards = _query_schemes_direct(retrieval_query, profile_for_search, limit=5)
+            direct_cards = _query_schemes_direct(retrieval_query, profile_for_search, limit=10)
             if direct_cards:
                 cards = _normalize_scheme_cards(direct_cards, profile=profile_for_search)
                 user_model.update_user(phone_number, {"last_schemes": cards, "last_schemes_cursor": len(cards), "selected_scheme": None})
@@ -1627,7 +1795,7 @@ def _handle_command(
                     lang,
                     intent="CHECK_ELIGIBILITY",
                 )
-            result = recommend_schemes(profile_for_search, query=retrieval_query, top_k=5)
+            result = recommend_schemes(profile_for_search, query=retrieval_query, top_k=10)
             cards = _normalize_scheme_cards(result.get("schemes") or [], profile=profile_for_search)
             if cards:
                 user_model.update_user(phone_number, {"last_schemes": cards, "last_schemes_cursor": len(cards), "selected_scheme": None})
@@ -1654,7 +1822,7 @@ def _handle_command(
     return _result({"response": LABELS["help"], "schemes": [], "fallback_used": False}, "active", lang, intent="HELP")
 
 
-def _query_schemes_direct(query: str, profile: dict[str, Any], limit: int = 5) -> list[dict[str, Any]]:
+def _query_schemes_direct(query: str, profile: dict[str, Any], limit: int = 10) -> list[dict[str, Any]]:
     dataset = load_scheme_dataset()
     if not dataset:
         return []
@@ -1996,6 +2164,19 @@ def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str
                     "inferred_field": _effective_field,
                     "conv_state": conv_state,
                 })
+        validation_error = _validate_expected_field_input(_effective_field, text, language)
+        if validation_error:
+            user_model.update_user(
+                phone_number,
+                {"last_question_field": _effective_field, "conv_state": "collecting_profile"},
+            )
+            retry_question = _field_question(_effective_field or "category", language)
+            return _result(
+                {"response": f"{validation_error}\n\n{retry_question}", "schemes": [], "fallback_used": False},
+                "collecting_profile",
+                language,
+                intent="HELP",
+            )
         fast_extract = _fast_extract_expected_field(_effective_field, text)
         if fast_extract:
             english_text = str(text or "")
@@ -2098,7 +2279,7 @@ def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str
     if goal == "general_query":
         if _enough_for_results(merged_profile):
             retrieval_query = _build_retrieval_query(english_text, merged_profile)
-            direct_cards = _query_schemes_direct(retrieval_query, merged_profile, limit=3)
+            direct_cards = _query_schemes_direct(retrieval_query, merged_profile, limit=10)
             if direct_cards:
                 payload = _build_schemes_payload(
                     direct_cards,
@@ -2118,7 +2299,7 @@ def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str
                     language,
                     intent="SEARCH_SCHEMES",
                 )
-            result = recommend_schemes(merged_profile, query=retrieval_query, top_k=3)
+            result = recommend_schemes(merged_profile, query=retrieval_query, top_k=10)
             payload = _build_schemes_payload(
                 result.get("schemes") or [],
                 language,
@@ -2149,7 +2330,7 @@ def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str
             question = _render_followup_question(next_field, language, next_question_english)
             return _result({"response": question, "schemes": [], "fallback_used": False}, "collecting_profile", language, intent="SEARCH_SCHEMES")
         retrieval_query = _build_retrieval_query(english_text, merged_profile)
-        direct_cards = _query_schemes_direct(retrieval_query, merged_profile, limit=5)
+        direct_cards = _query_schemes_direct(retrieval_query, merged_profile, limit=10)
         if direct_cards:
             payload = _build_schemes_payload(
                 direct_cards,
@@ -2169,7 +2350,7 @@ def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str
                 language,
                 intent="SEARCH_SCHEMES",
             )
-        result = recommend_schemes(merged_profile, query=retrieval_query, top_k=5)
+        result = recommend_schemes(merged_profile, query=retrieval_query, top_k=10)
         payload = _build_schemes_payload(
             result.get("schemes") or [],
             language,
@@ -2197,7 +2378,7 @@ def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str
 
     if _enough_for_results(merged_profile):
         retrieval_query = _build_retrieval_query(english_text, merged_profile)
-        direct_cards = _query_schemes_direct(retrieval_query, merged_profile, limit=5)
+        direct_cards = _query_schemes_direct(retrieval_query, merged_profile, limit=10)
         if direct_cards:
             payload = _build_schemes_payload(
                 direct_cards,
@@ -2217,7 +2398,7 @@ def handle_message(phone_number: str, message: str) -> tuple[dict[str, Any], str
                 language,
                 intent="SEARCH_SCHEMES",
             )
-        result = recommend_schemes(merged_profile, query=retrieval_query, top_k=5)
+        result = recommend_schemes(merged_profile, query=retrieval_query, top_k=10)
         payload = _build_schemes_payload(
             result.get("schemes") or [],
             language,

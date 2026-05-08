@@ -61,7 +61,16 @@ STATE_ALIASES: dict[str, str] = {
     "uttarpradesh": "uttar pradesh",
     "उत्तर प्रदेश": "uttar pradesh",
     "उत्तरप्रदेश": "uttar pradesh",
+    "jharkhand": "jharkhand",
+    "jarkhand": "jharkhand",
+    "gujarat": "gujarat",
+    "gujrat": "gujarat",
+    "ગુજરાત": "gujarat",
+    "झारखंड": "jharkhand",
+    "झारखण्ड": "jharkhand",
 }
+
+NATIONAL_STATE_TOKENS: set[str] = {"all india", "india", "national", "central"}
 
 GENDER_NORMALIZE = {
     "male": "male",
@@ -516,6 +525,90 @@ def normalize_state_name(raw_state: Any) -> str | None:
 
     matches = get_close_matches(state_str, INDIAN_STATES, n=1, cutoff=0.75)
     return matches[0] if matches else None
+
+
+def normalize_state_for_geo(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    compact = re.sub(r"\s+", " ", lowered).strip()
+    if compact in NATIONAL_STATE_TOKENS:
+        return compact
+    normalized = normalize_state_name(text) or normalize_state_name(compact)
+    return str(normalized or compact).strip().lower()
+
+
+def is_true_national_scheme(scheme: dict[str, Any]) -> bool:
+    state = normalize_state_for_geo((scheme or {}).get("state"))
+    return state in NATIONAL_STATE_TOKENS
+
+
+def is_user_state_scheme(scheme: dict[str, Any], user_state: Any) -> bool:
+    scheme_state = normalize_state_for_geo((scheme or {}).get("state"))
+    user_state_norm = normalize_state_for_geo(user_state)
+    return bool(scheme_state and user_state_norm and scheme_state == user_state_norm)
+
+
+def is_scheme_allowed_for_user(scheme: dict[str, Any], user_state: Any) -> bool:
+    user_state_norm = normalize_state_for_geo(user_state)
+    if not user_state_norm:
+        return True
+    return is_user_state_scheme(scheme, user_state_norm) or is_true_national_scheme(scheme)
+
+
+def normalize_category_for_match(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("&", " and ")
+    compact = re.sub(r"\s+", " ", text).strip()
+    if not compact:
+        return ""
+
+    direct = {
+        "education": "education",
+        "health": "health",
+        "agriculture": "agriculture",
+        "employment": "employment",
+        "housing": "housing",
+        "finance": "finance_business",
+        "financial assistance": "finance_business",
+        "business": "finance_business",
+        "finance business": "finance_business",
+        "women child": "women_child",
+        "women and child": "women_child",
+        "women": "women_child",
+        "senior citizen": "senior_citizen",
+        "disability": "disability",
+        "social welfare": "social_welfare",
+        "others": "social_welfare",
+        "other": "social_welfare",
+    }
+    if compact in direct:
+        return direct[compact]
+
+    inferred = infer_scheme_category(compact)
+    if inferred:
+        return str(inferred).strip().lower()
+    return compact.replace(" ", "_")
+
+
+def category_matches_user_intent(scheme: dict[str, Any], user_category: Any) -> bool:
+    user_cat = normalize_category_for_match(user_category)
+    if not user_cat or user_cat == "unknown":
+        return True
+
+    scheme_category = normalize_category_for_match(
+        (scheme or {}).get("category") or (scheme or {}).get("scheme_category") or ""
+    )
+    if scheme_category == user_cat:
+        return True
+
+    inferred = normalize_category_for_match(
+        " ".join(
+            str((scheme or {}).get(key) or "").strip()
+            for key in ("category", "scheme_name", "description", "benefits", "benefits_summary")
+        )
+    )
+    return inferred == user_cat
 
 
 def normalize_income_value(value: Any) -> int | None:

@@ -794,6 +794,8 @@ class TestStateOutputFixes(unittest.TestCase):
 
         self.assertIn('const responseText = (data.response || "").replace(/\\n/g, "<br>");', script)
         self.assertIn('const stateLabel = (s.state && s.state.trim()) ? s.state.trim() : "All India";', script)
+        self.assertIn('State-level Schemes', script)
+        self.assertIn('National-level Schemes', script)
         self.assertNotIn("State: Not specified", script)
 
     def test_api_contract_keeps_response_and_schemes_separate(self):
